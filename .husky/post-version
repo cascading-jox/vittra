@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Get the new version from package.json
+VERSION=$(node -p "require('./package.json').version")
+
+# Add the changelog to the version commit
+git add CHANGELOG.md
+git commit --amend --no-edit
+
+# Create an annotated tag with the version and include the changelog section
+CHANGELOG_SECTION=$(awk "/## \[$VERSION\]/{p=1;print;next} /## \[/{p=0} p" CHANGELOG.md)
+git tag -a "v$VERSION" -m "Release v$VERSION" -m "$CHANGELOG_SECTION"
+
+# Push the tag
+git push origin "v$VERSION"
+
+# Push the version commit
+git push

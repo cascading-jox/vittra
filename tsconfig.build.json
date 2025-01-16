@@ -1,0 +1,16 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "declaration": true,
+        "declarationMap": true,
+        "emitDeclarationOnly": true,
+        "noEmit": false,
+        "outDir": "dist",
+        "declarationDir": "dist",
+        "composite": false,
+        "incremental": false,
+        "rootDir": "lib/src"
+    },
+    "include": ["lib/src/av-log.ts"],
+    "exclude": ["node_modules", "dist", "demo"]
+}

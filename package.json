@@ -1,0 +1,86 @@
+{
+    "name": "av-log",
+    "version": "0.0.0",
+    "description": "Advanced browser logging library with modern ES Module support",
+    "type": "module",
+    "main": "dist/av-log.js",
+    "module": "dist/av-log.js",
+    "types": "dist/av-log.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/av-log.js"
+        }
+    },
+    "files": [
+        "dist/av-log.js",
+        "dist/av-log.js.map",
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "README.md"
+    ],
+    "sideEffects": false,
+    "engines": {
+        "node": ">=16.0.0"
+    },
+    "scripts": {
+        "prepare": "husky",
+        "dev": "vite demo",
+        "clean": "rm -rf dist",
+        "build:js": "vite build",
+        "build:types": "tsc -p tsconfig.build.json",
+        "build": "npm run clean && npm run build:js && npm run build:types",
+        "type-check": "tsc --noEmit",
+        "verify-package": "publint",
+        "verify": "run-s type-check lint test build verify-package",
+        "prepublishOnly": "npm run verify",
+        "changelog": "standard-version --skip.bump --skip.tag --skip.commit",
+        "version:patch": "npm version patch",
+        "version:minor": "npm version minor",
+        "version:major": "npm version major",
+        "release:patch": "run-s verify changelog version:patch",
+        "release:minor": "run-s verify changelog version:minor",
+        "release:major": "run-s verify changelog version:major",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "lint": "eslint .",
+        "lint:fix": "eslint . --fix",
+        "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+        "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\""
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^19.6.1",
+        "@commitlint/config-conventional": "^19.6.0",
+        "@typescript-eslint/eslint-plugin": "^8.20.0",
+        "@typescript-eslint/parser": "^8.20.0",
+        "eslint": "^9.18.0",
+        "eslint-config-prettier": "^10.0.1",
+        "eslint-plugin-prettier": "^5.2.2",
+        "husky": "^9.1.7",
+        "jsdom": "^24.0.0",
+        "npm-run-all": "^4.1.5",
+        "prettier": "^3.4.2",
+        "publint": "^0.3.2",
+        "standard-version": "^9.5.0",
+        "typescript": "^5.6.3",
+        "vite": "^6.0.5",
+        "vitest": "^3.0.1"
+    },
+    "keywords": [
+        "logging",
+        "browser",
+        "esm",
+        "typescript"
+    ],
+    "author": "",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/yourusername/av-log.git"
+    },
+    "bugs": {
+        "url": "https://github.com/yourusername/av-log/issues"
+    },
+    "homepage": "https://github.com/yourusername/av-log#readme"
+}
