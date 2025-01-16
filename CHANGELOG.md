@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of av-log library
+## [0.1.0] - 2025-01-16
+
+### Added
+
 - Core logging functionality with context-aware depth tracking
 - Logging functions:
     - `tfi()`: Function entry logging with arguments
@@ -33,3 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Arrays
     - Primitives (strings, numbers)
     - Multiple arguments
+- New async trace functions:
+  - `tfia()`: Async function entry logging
+  - `tfoa()`: Async function exit logging
