@@ -1,22 +1,19 @@
 {
     "name": "av-log",
     "version": "0.0.0",
-    "description": "Advanced browser logging library with modern ES Module support",
+    "description": "Simple browser log-tracing library",
     "type": "module",
     "main": "dist/av-log.js",
     "module": "dist/av-log.js",
     "types": "dist/av-log.d.ts",
     "exports": {
         ".": {
-            "types": "./dist/index.d.ts",
             "import": "./dist/av-log.js"
         }
     },
     "files": [
         "dist/av-log.js",
         "dist/av-log.js.map",
-        "dist/index.d.ts",
-        "dist/index.d.ts.map",
         "README.md"
     ],
     "sideEffects": false,
@@ -73,14 +70,13 @@
         "esm",
         "typescript"
     ],
-    "author": "",
-    "license": "MIT",
+    "author": "cascading-jox",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/yourusername/av-log.git"
+        "url": "git+https://github.com/cascading-jox/av-log"
     },
     "bugs": {
-        "url": "https://github.com/yourusername/av-log/issues"
+        "url": "https://github.com/cascading-jox/av-logissues"
     },
-    "homepage": "https://github.com/yourusername/av-log#readme"
+    "homepage": "https://github.com/cascading-jox/av-log#readme"
 }
