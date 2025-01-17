@@ -1,7 +1,7 @@
 import { AvLog } from '../../dist/av-log';
 
 // Create a logger with all features enabled
-const log = new AvLog({ debugLevel: 1, logTime: true, logWithType: true });
+const log = new AvLog({ logLevel: 1, logTime: true, logWithType: true });
 
 // Basic logging
 function demoBasicLogging() {

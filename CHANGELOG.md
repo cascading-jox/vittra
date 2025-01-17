@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- URL parameter support for debug level override via `avLogLevel` parameter
 
 ## [0.1.0] - 2025-01-16
 

@@ -9,7 +9,7 @@ export type LogContext = Record<string, unknown>;
  */
 export interface AvLogOptions {
     /** 0 (default) to disable, 1 to enable logging */
-    debugLevel?: number;
+    logLevel?: number;
     /** Set true to enable time logging for all functions (default false) */
     logTime?: boolean;
     /** Set true to enable explicit string and number formatting */
@@ -31,7 +31,7 @@ export interface AvLogOptions {
  *
  * Example usage:
  * ```typescript
- * const log = new AvLog({ debugLevel: 1, logTime: true });
+ * const log = new AvLog({ logLevel: 1, logTime: true });
  *
  * function processUser(userId: string) {
  *   log.tfi('processUser', userId);  // --> processUser( "123" )
@@ -49,7 +49,7 @@ export interface AvLogOptions {
  * ```
  */
 export class AvLog {
-    private debugLevel: number;
+    private logLevel: number;
     private logTime: boolean;
     private logWithType: boolean;
     private boldStyle: string;
@@ -60,7 +60,11 @@ export class AvLog {
     private currentIndent: number = 0;
 
     constructor(options: AvLogOptions = {}) {
-        this.debugLevel = options.debugLevel || 0;
+        // Check URL parameter for log level override
+        const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+        const logLevelParam = urlParams?.get('avLogLevel') || null;
+
+        this.logLevel = logLevelParam !== null ? Number(logLevelParam) : (options.logLevel || 0);
         this.logTime = options.logTime || false;
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
@@ -96,7 +100,7 @@ export class AvLog {
      * Internal method to handle different types of console output
      */
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
 
         const objectClone = JSON.parse(JSON.stringify(valuesToLog));
         const lastTimer = this.timers[this.timers.length - 1];
@@ -188,7 +192,7 @@ export class AvLog {
      * ```
      */
     tfia(func: string, ...args: unknown[]): number {
-        if (this.debugLevel === 0) return this.nextAsyncId++;
+        if (this.logLevel === 0) return this.nextAsyncId++;
 
         const indent = this.currentIndent;
         this.currentIndent += 2;
@@ -241,7 +245,7 @@ export class AvLog {
      * ```
      */
     tfoa(func: string, opId: number, ...returnValues: unknown[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
 
         const key = `${func}:${opId}`;
         const op = this.asyncOps.get(key);
@@ -278,7 +282,7 @@ export class AvLog {
      * ```
      */
     tfi(func: string, ...callerArgs: unknown[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
 
         // Add function to stack
         this.functionStack.push(func);
@@ -332,7 +336,7 @@ export class AvLog {
      * ```
      */
     tfo(func: string, ...returnValues: unknown[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
 
         // Check if this is the expected function
         const lastFunc = this.functionStack[this.functionStack.length - 1];
@@ -457,7 +461,7 @@ export class AvLog {
      * ```
      */
     tft(tabularData?: any, properties?: string[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
         console.table(tabularData, properties);
     }
 
@@ -476,7 +480,7 @@ export class AvLog {
     }
 
     private log(...valuesToLog: unknown[]): void {
-        if (this.debugLevel === 0) return;
+        if (this.logLevel === 0) return;
 
         const objectClone = JSON.parse(JSON.stringify(valuesToLog));
         const lastTimer = this.timers[this.timers.length - 1];
