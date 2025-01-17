@@ -49,3 +49,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm publish --no-git-checks --provenance --access public
+
+      - name: Update JSR version
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          jq --arg v "$VERSION" '.version = $v' jsr.json > temp.json && mv temp.json jsr.json
+
+      - name: Publish to JSR
+        if: ${{ steps.release.outputs.release_created }}
+        run: pnpx jsr publish

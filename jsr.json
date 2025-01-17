@@ -1,0 +1,8 @@
+{
+  "name": "@cascading-jox/vittra",
+  "version": "0.2.2",
+  "description": "Simple browser log-tracing library",
+  "exports": {
+    ".": "./lib/src/vittra.ts"
+  }
+}
