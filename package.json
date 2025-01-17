@@ -12,9 +12,7 @@
         }
     },
     "files": [
-        "dist/av-log.js",
-        "dist/av-log.js.map",
-        "README.md"
+        "dist"
     ],
     "sideEffects": false,
     "engines": {
@@ -29,7 +27,7 @@
         "build": "pnpm run clean && pnpm run build:js && pnpm run build:types",
         "type-check": "tsc --noEmit",
         "verify-package": "publint",
-        "verify": "run-s type-check lint test build verify-package",
+        "verify": "run-s type-check lint:fix test build verify-package",
         "prepublishOnly": "pnpm run verify",
         "test": "vitest run",
         "test:watch": "vitest",
@@ -48,7 +46,6 @@
         "eslint-config-prettier": "^10.0.1",
         "eslint-plugin-prettier": "^5.2.2",
         "husky": "^9.1.7",
-        "jsdom": "^24.0.0",
         "npm-run-all": "^4.1.5",
         "prettier": "^3.4.2",
         "publint": "^0.3.2",
@@ -66,7 +63,7 @@
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/cascading-jox/av-log"
+        "url": "git+https://github.com/cascading-jox/av-log.git"
     },
     "bugs": {
         "url": "https://github.com/cascading-jox/av-logissues"
