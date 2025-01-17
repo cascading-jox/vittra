@@ -4,13 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.0](https://github.com/cascading-jox/av-log/compare/v0.1.0...v0.2.0) (2025-01-17)
 
-
-### Features
-
-* add support for URL param override for logLevel ([d8ba490](https://github.com/cascading-jox/av-log/commit/d8ba490d225c5d9978142a95da6266da0b404bc7))
-
-## [0.2.0](https://github.com/cascading-jox/av-log/compare/v0.1.0...v0.2.0) (2025-01-17)
-
 ### Features
 
 * add support for URL param override for logLevel ([d8ba490](https://github.com/cascading-jox/av-log/commit/d8ba490d225c5d9978142a95da6266da0b404bc7))
