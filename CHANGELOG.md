@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2](https://github.com/cascading-jox/av-log/compare/v0.2.1...v0.2.2) (2025-01-17)
+
+
+### Bug Fixes
+
+* ci trigger commit ([b7e523e](https://github.com/cascading-jox/av-log/commit/b7e523e8d99a84f8a46628ec148aef0fdedf9fc9))
+
 ## [0.2.1](https://github.com/cascading-jox/av-log/compare/v0.2.0...v0.2.1) (2025-01-17)
 
 ### Bug Fixes
