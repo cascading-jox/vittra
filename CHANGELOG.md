@@ -4,13 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.2](https://github.com/cascading-jox/vittra/compare/v0.2.2...v0.2.2) (2025-01-17)
 
-
-### Features
-
-* add support for URL param override for logLevel ([d8ba490](https://github.com/cascading-jox/vittra/commit/d8ba490d225c5d9978142a95da6266da0b404bc7))
-* initial commit ([10c7e88](https://github.com/cascading-jox/vittra/commit/10c7e88b7ba62297ec9b5bf4114fd8f127bb2282))
-
-
 ### Bug Fixes
 
 * ci trigger commit ([b7e523e](https://github.com/cascading-jox/vittra/commit/b7e523e8d99a84f8a46628ec148aef0fdedf9fc9))
