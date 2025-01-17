@@ -1,5 +1,3 @@
-/// <reference lib="dom" />
-
 /**
  * Type definitions for log levels and context
  */
