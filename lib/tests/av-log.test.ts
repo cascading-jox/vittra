@@ -142,7 +142,7 @@ describe('AvLog', () => {
         it('should log function entry with tfi', () => {
             log.tfi('testFunction', 'arg1', 'arg2');
             expect(consoleGroupSpy).toHaveBeenCalledWith(
-                '%c--> testFunction( ',
+                '%c--> testFunction(',
                 'font-weight: bold',
                 'arg1',
                 ',',
@@ -158,7 +158,7 @@ describe('AvLog', () => {
 
             expect(consoleGroupEndSpy).toHaveBeenCalled();
             expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c<-- testFunction [1.0 s] = ',
+                '%c<-- testFunction [1.0 s] =',
                 'font-weight: bold',
                 { result: 'success' },
             );
@@ -234,106 +234,115 @@ describe('AvLog', () => {
         });
 
         it('should track async operations with proper indentation and timing', () => {
-            const opId = log.tfia('asyncOp');
+            const opId = log.tfia('asyncOp', 'arg1');
             performanceNowSpy.mockReturnValue(2000);
-            log.tfoa('asyncOp', opId);
+            log.tfoa('asyncOp', opId, { result: 'success' });
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c',
+                '%c⟳ asyncOp(',
                 'font-weight: bold',
-                '⟳ asyncOp()',
-                ''
+                'arg1',
+                ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c',
+                '%c✓ asyncOp() [1.0 s] =',
                 'font-weight: bold',
-                '✓ asyncOp() [1.0 s]',
-                ''
+                { result: 'success' },
             );
         });
 
         it('should handle nested async operations', () => {
-            const outerOpId = log.tfia('outerAsync');
-            const innerOpId = log.tfia('innerAsync');
+            const outerOpId = log.tfia('outerAsync', { param: 'outer' });
+            const innerOpId = log.tfia('innerAsync', { param: 'inner' });
 
             performanceNowSpy.mockReturnValue(2000);
-            log.tfoa('innerAsync', innerOpId);
-            log.tfoa('outerAsync', outerOpId);
+            log.tfoa('innerAsync', innerOpId, { inner: 'result' });
+            log.tfoa('outerAsync', outerOpId, { outer: 'result' });
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c',
+                '%c⟳ outerAsync(',
                 'font-weight: bold',
-                '⟳ outerAsync()',
-                ''
+                { param: 'outer' },
+                ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c',
+                '%c  ⟳ innerAsync(',
                 'font-weight: bold',
-                '  ⟳ innerAsync()',
-                ''
+                { param: 'inner' },
+                ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c',
+                '%c  ✓ innerAsync() [1.0 s] =',
                 'font-weight: bold',
-                '  ✓ innerAsync() [1.0 s]',
-                ''
+                { inner: 'result' },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c',
+                '%c✓ outerAsync() [1.0 s] =',
                 'font-weight: bold',
-                '✓ outerAsync() [1.0 s]',
-                ''
+                { outer: 'result' },
             );
         });
 
         it('should handle multiple concurrent calls to the same async function', () => {
-            const op1Id = log.tfia('asyncOp');
-            const op2Id = log.tfia('asyncOp');
+            const op1Id = log.tfia('asyncOp', { id: 1 });
+            const op2Id = log.tfia('asyncOp', { id: 2 });
 
             performanceNowSpy.mockReturnValue(2000);
-            log.tfoa('asyncOp', op1Id);
-            log.tfoa('asyncOp', op2Id);
+            log.tfoa('asyncOp', op1Id, { result: 1 });
+            log.tfoa('asyncOp', op2Id, { result: 2 });
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c',
+                '%c⟳ asyncOp(',
                 'font-weight: bold',
-                '⟳ asyncOp()',
-                ''
+                { id: 1 },
+                ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c',
+                '%c  ⟳ asyncOp(',
                 'font-weight: bold',
-                '  ⟳ asyncOp()',
-                ''
+                { id: 2 },
+                ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c',
+                '%c✓ asyncOp() [1.0 s] =',
                 'font-weight: bold',
-                '✓ asyncOp() [1.0 s]',
-                ''
+                { result: 1 },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c',
+                '%c  ✓ asyncOp() [1.0 s] =',
                 'font-weight: bold',
-                '  ✓ asyncOp() [1.0 s]',
-                ''
+                { result: 2 },
+            );
+        });
+
+        it('should handle async operations without arguments or return values', () => {
+            const opId = log.tfia('asyncOp');
+            performanceNowSpy.mockReturnValue(2000);
+            log.tfoa('asyncOp', opId);
+
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ asyncOp()', 'font-weight: bold');
+
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                2,
+                '%c✓ asyncOp() [1.0 s]',
+                'font-weight: bold',
             );
         });
 
@@ -341,13 +350,7 @@ describe('AvLog', () => {
             const opId = log.tfia('asyncOp1');
             log.tfoa('asyncOp2', opId);
 
-            expect(consoleLogSpy).toHaveBeenNthCalledWith(
-                1,
-                '%c',
-                'font-weight: bold',
-                '⟳ asyncOp1()',
-                ''
-            );
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ asyncOp1()', 'font-weight: bold');
 
             expect(consoleWarnSpy).toHaveBeenCalledWith(
                 '%c+ ',
@@ -370,7 +373,7 @@ describe('AvLog', () => {
             log.tfo('test');
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 '%c<-- test [500.0 ms]',
-                'font-weight: bold'
+                'font-weight: bold',
             );
         });
 
@@ -378,20 +381,14 @@ describe('AvLog', () => {
             performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(2500);
             log.tfi('test');
             log.tfo('test');
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c<-- test [1.500 s]',
-                'font-weight: bold'
-            );
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [1.500 s]', 'font-weight: bold');
         });
 
         it('should format minutes correctly', () => {
             performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(91000);
             log.tfi('test');
             log.tfo('test');
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c<-- test [01:30.0]',
-                'font-weight: bold'
-            );
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [01:30.0]', 'font-weight: bold');
         });
     });
 });

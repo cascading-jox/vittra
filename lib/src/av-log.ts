@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 /**
  * Type definitions for log levels and context
  */
@@ -61,10 +63,21 @@ export class AvLog {
 
     constructor(options: AvLogOptions = {}) {
         // Check URL parameter for log level override
-        const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-        const logLevelParam = urlParams?.get('avLogLevel') || null;
+        let logLevelParam = null;
+        try {
+            if (
+                typeof globalThis !== 'undefined' &&
+                globalThis.location?.search &&
+                typeof globalThis.URLSearchParams === 'function'
+            ) {
+                const urlParams = new globalThis.URLSearchParams(globalThis.location.search);
+                logLevelParam = urlParams.get('avLogLevel');
+            }
+        } catch {
+            // Silently handle any errors if URL parsing fails
+        }
 
-        this.logLevel = logLevelParam !== null ? Number(logLevelParam) : (options.logLevel || 0);
+        this.logLevel = logLevelParam !== null ? Number(logLevelParam) : options.logLevel || 0;
         this.logTime = options.logTime || false;
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
@@ -204,8 +217,28 @@ export class AvLog {
         this.asyncOps.set(key, { start: startTime, indent, id: opId });
 
         const prefix = ' '.repeat(indent);
-        const argsStr = args.length ? ` ${JSON.stringify(args[0])}` : '';
-        this.log(`${prefix}⟳ ${func}()${argsStr}`);
+        const tmpArray: unknown[] = [];
+        if (args != null && args.length > 0) {
+            if (typeof args === 'number' || typeof args === 'string') {
+                tmpArray.push(args);
+            } else {
+                let i = 0;
+                for (const key in args) {
+                    if (Object.prototype.hasOwnProperty.call(args, key)) {
+                        const element = args[key];
+                        tmpArray.push(element);
+                        if (Object.keys(args).length - 1 !== i) {
+                            tmpArray.push(',');
+                        }
+                        ++i;
+                    }
+                }
+            }
+            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            console.log(`%c${prefix}⟳ ${func}(`, this.boldStyle, ...objectClone, ')');
+        } else {
+            console.log(`%c${prefix}⟳ ${func}()`, this.boldStyle);
+        }
 
         return opId;
     }
@@ -261,8 +294,28 @@ export class AvLog {
         }
 
         const prefix = ' '.repeat(op.indent);
-        const returnStr = returnValues.length ? ` => ${JSON.stringify(returnValues[0])}` : '';
-        this.log(`${prefix}✓ ${func}()${runTimeString}${returnStr}`);
+        const tmpArray: unknown[] = [];
+        if (returnValues != null && returnValues.length > 0) {
+            if (typeof returnValues === 'number' || typeof returnValues === 'string') {
+                tmpArray.push(returnValues);
+            } else {
+                let i = 0;
+                for (const key in returnValues) {
+                    if (Object.prototype.hasOwnProperty.call(returnValues, key)) {
+                        const element = returnValues[key];
+                        tmpArray.push(element);
+                        if (Object.keys(returnValues).length - 1 !== i) {
+                            tmpArray.push(',');
+                        }
+                        ++i;
+                    }
+                }
+            }
+            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            console.log(`%c${prefix}✓ ${func}()${runTimeString} =`, this.boldStyle, ...objectClone);
+        } else {
+            console.log(`%c${prefix}✓ ${func}()${runTimeString}`, this.boldStyle);
+        }
 
         this.asyncOps.delete(key);
         this.currentIndent = op.indent;
@@ -311,9 +364,9 @@ export class AvLog {
             const objectClone = JSON.parse(JSON.stringify(tmpArray));
 
             if (objectClone.length === 0) {
-                console.group(`%c--> ${func}( `, this.boldStyle, ...objectClone, ')');
+                console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
             } else {
-                console.group(`%c--> ${func}( `, this.boldStyle, ...objectClone, ')');
+                console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
             }
         } else {
             console.group(`%c--> ${func}(`, this.boldStyle, ')');
@@ -382,9 +435,9 @@ export class AvLog {
             console.groupEnd();
 
             if (objectClone.length === 0) {
-                console.log(`%c<-- ${func} ${runTimeString} = `, this.boldStyle, ...objectClone);
+                console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
             } else {
-                console.log(`%c<-- ${func} ${runTimeString} = `, this.boldStyle, ...objectClone);
+                console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
             }
         } else {
             console.groupEnd();
@@ -460,7 +513,7 @@ export class AvLog {
      * log.tft(users, ['name']);  // Displays a table with only the name column
      * ```
      */
-    tft(tabularData?: any, properties?: string[]): void {
+    tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
         if (this.logLevel === 0) return;
         console.table(tabularData, properties);
     }
@@ -477,32 +530,5 @@ export class AvLog {
             return true;
         }
         return false;
-    }
-
-    private log(...valuesToLog: unknown[]): void {
-        if (this.logLevel === 0) return;
-
-        const objectClone = JSON.parse(JSON.stringify(valuesToLog));
-        const lastTimer = this.timers[this.timers.length - 1];
-        let deltaString = '';
-
-        if (this.logTime && typeof lastTimer === 'number') {
-            const delta = performance.now() - lastTimer;
-            const formattedTime = this.formatTime(delta);
-            deltaString = `  [Δ ${formattedTime}]`;
-        }
-
-        let nOs = '';
-        if (this.logWithType === true) {
-            nOs = '%o'.repeat(objectClone.length);
-        }
-
-        const isSimpleType = typeof objectClone === 'number' || typeof objectClone === 'string';
-
-        if (isSimpleType) {
-            console.log('%c', this.boldStyle, objectClone, deltaString);
-        } else {
-            console.log(`%c${nOs}`, this.boldStyle, ...objectClone, deltaString);
-        }
     }
 }
