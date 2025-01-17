@@ -1,7 +1,7 @@
-import { AvLog } from '../../dist/av-log';
+import { Vittra } from '../../dist/vittra';
 
 // Create a logger with all features enabled
-const log = new AvLog({ logLevel: 1, logTime: true, logWithType: true });
+const log = new Vittra({ logLevel: 1, logTime: true, logWithType: true });
 
 // Basic logging
 function demoBasicLogging() {

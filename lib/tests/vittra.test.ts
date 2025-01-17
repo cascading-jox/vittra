@@ -1,9 +1,9 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { AvLog, AvLogOptions } from '../src/av-log';
+import { Vittra, VittraOptions } from '../src/vittra';
 
-describe('AvLog', () => {
-    let log: AvLog;
+describe('Vittra', () => {
+    let log: Vittra;
     let performanceNowSpy: MockInstance;
     let consoleLogSpy: MockInstance;
     let consoleWarnSpy: MockInstance;
@@ -32,29 +32,29 @@ describe('AvLog', () => {
     beforeEach(() => {
         setupSpies();
         vi.clearAllMocks();
-        log = new AvLog({ logLevel: 1, logTime: true });
+        log = new Vittra({ logLevel: 1, logTime: true });
     });
 
     describe('constructor', () => {
-        it('should initialize with default options', () => {
-            log = new AvLog();
+        it('should create instance with default options', () => {
+            log = new Vittra();
             expect(log).toBeDefined();
         });
 
-        it('should initialize with custom options', () => {
-            const options: AvLogOptions = {
+        it('should create instance with custom options', () => {
+            const options: VittraOptions = {
                 logLevel: 1,
                 logTime: true,
                 logWithType: true,
             };
-            log = new AvLog(options);
+            log = new Vittra(options);
             expect(log).toBeDefined();
         });
     });
 
     describe('logging methods with logLevel 0', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 0 });
+            log = new Vittra({ logLevel: 0 });
         });
 
         it('should not log anything when logLevel is 0', () => {
@@ -77,7 +77,7 @@ describe('AvLog', () => {
 
     describe('logging methods with logLevel 1', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 1 });
+            log = new Vittra({ logLevel: 1 });
         });
 
         it('should log basic message with tf', () => {
@@ -135,7 +135,7 @@ describe('AvLog', () => {
 
     describe('function tracing', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 1, logTime: true });
             performanceNowSpy.mockReturnValueOnce(1000);
         });
 
@@ -183,7 +183,7 @@ describe('AvLog', () => {
 
     describe('function tracking', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 1 });
+            log = new Vittra({ logLevel: 1 });
             vi.clearAllMocks();
             setupSpies();
         });
@@ -229,7 +229,7 @@ describe('AvLog', () => {
 
     describe('async function tracking', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 1, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
@@ -363,7 +363,7 @@ describe('AvLog', () => {
 
     describe('time formatting', () => {
         beforeEach(() => {
-            log = new AvLog({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 1, logTime: true });
             setupSpies();
         });
 

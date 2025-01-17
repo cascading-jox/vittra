@@ -7,9 +7,9 @@ export type LogLevel = 'info' | 'warning' | 'error' | 'debug';
 export type LogContext = Record<string, unknown>;
 
 /**
- * Configuration options for AvLog
+ * Configuration options for Vittra
  */
-export interface AvLogOptions {
+export interface VittraOptions {
     /** 0 (default) to disable, 1 to enable logging */
     logLevel?: number;
     /** Set true to enable time logging for all functions (default false) */
@@ -19,12 +19,10 @@ export interface AvLogOptions {
 }
 
 /**
- * AvLog - A simple context-in-depth logging library.
+ * Vittra - A simple context-in-depth logging library.
  * All methods use a 't' prefix for "trace", followed by their specific function:
  * - tfi: trace function in (entry)
  * - tfo: trace function out (exit)
- * - tfia: trace function in async (async entry)
- * - tfoa: trace function out async (async exit)
  * - tf:  trace format (basic logging)
  * - tfc: trace format clean (no prefix)
  * - tfw: trace format warning
@@ -33,7 +31,7 @@ export interface AvLogOptions {
  *
  * Example usage:
  * ```typescript
- * const log = new AvLog({ logLevel: 1, logTime: true });
+ * const log = new Vittra({ logLevel: 1, logTime: true });
  *
  * function processUser(userId: string) {
  *   log.tfi('processUser', userId);  // --> processUser( "123" )
@@ -50,7 +48,7 @@ export interface AvLogOptions {
  * }
  * ```
  */
-export class AvLog {
+export class Vittra {
     private logLevel: number;
     private logTime: boolean;
     private logWithType: boolean;
@@ -61,7 +59,7 @@ export class AvLog {
     private nextAsyncId: number = 1;
     private currentIndent: number = 0;
 
-    constructor(options: AvLogOptions = {}) {
+    constructor(options: VittraOptions = {}) {
         // Check URL parameter for log level override
         let logLevelParam = null;
         try {
@@ -71,7 +69,7 @@ export class AvLog {
                 typeof globalThis.URLSearchParams === 'function'
             ) {
                 const urlParams = new globalThis.URLSearchParams(globalThis.location.search);
-                logLevelParam = urlParams.get('avLogLevel');
+                logLevelParam = urlParams.get('vittraLogLevel');
             }
         } catch {
             // Silently handle any errors if URL parsing fails

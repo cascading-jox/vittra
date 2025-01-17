@@ -1,14 +1,14 @@
 {
-    "name": "av-log",
+    "name": "vittra",
     "version": "0.2.1",
     "description": "Simple browser log-tracing library",
     "type": "module",
-    "main": "dist/av-log.js",
-    "module": "dist/av-log.js",
-    "types": "dist/av-log.d.ts",
+    "main": "dist/vittra.js",
+    "module": "dist/vittra.js",
+    "types": "dist/vittra.d.ts",
     "exports": {
         ".": {
-            "import": "./dist/av-log.js"
+            "import": "./dist/vittra.js"
         }
     },
     "files": [
@@ -63,10 +63,10 @@
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/cascading-jox/av-log.git"
+        "url": "git+https://github.com/cascading-jox/vittra.git"
     },
     "bugs": {
-        "url": "https://github.com/cascading-jox/av-logissues"
+        "url": "https://github.com/cascading-jox/vittra/issues"
     },
-    "homepage": "https://github.com/cascading-jox/av-log#readme"
+    "homepage": "https://github.com/cascading-jox/vittra#readme"
 }

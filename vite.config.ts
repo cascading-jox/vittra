@@ -7,9 +7,9 @@ export default defineConfig({
         sourcemap: true,
         minify: 'esbuild',
         lib: {
-            entry: resolve(__dirname, 'lib/src/av-log.ts'),
+            entry: resolve(__dirname, 'lib/src/vittra.ts'),
             formats: ['es'],
-            fileName: () => 'av-log.js',
+            fileName: () => 'vittra.js',
         },
         rollupOptions: {
             output: {

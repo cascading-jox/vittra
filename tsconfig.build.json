@@ -11,6 +11,12 @@
         "incremental": false,
         "rootDir": "lib/src"
     },
-    "include": ["lib/src/av-log.ts"],
-    "exclude": ["node_modules", "dist", "demo"]
+    "include": [
+        "lib/src/vittra.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "demo"
+    ]
 }
