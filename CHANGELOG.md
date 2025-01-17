@@ -56,3 +56,4 @@ Initial release of av-log:
 * Rich object and array formatting
 * Multi-argument logging
 * Primitive type handling (strings, numbers, etc.)
+
