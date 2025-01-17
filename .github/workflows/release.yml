@@ -58,4 +58,4 @@ jobs:
 
       - name: Publish to JSR
         if: ${{ steps.release.outputs.release_created }}
-        run: pnpx jsr publish
+        run: pnpx jsr publish --allow-dirty
