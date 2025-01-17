@@ -1,25 +1,38 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { AvLog, AvLogOptions } from '../src/av-log';
 
 describe('AvLog', () => {
     let log: AvLog;
-    let consoleLogSpy: any;
-    let consoleWarnSpy: any;
-    let consoleErrorSpy: any;
-    let consoleTableSpy: any;
-    let consoleGroupSpy: any;
-    let consoleGroupEndSpy: any;
-    let performanceNowSpy: any;
+    let performanceNowSpy: MockInstance;
+    let consoleLogSpy: MockInstance;
+    let consoleWarnSpy: MockInstance;
+    let consoleErrorSpy: MockInstance;
+    let consoleTableSpy: MockInstance;
+    let consoleGroupSpy: MockInstance;
+    let consoleGroupEndSpy: MockInstance;
+
+    function setupSpies(defaultPerformanceNow = 1000) {
+        performanceNowSpy = vi.fn(() => defaultPerformanceNow);
+        performance.now = performanceNowSpy;
+        consoleLogSpy = vi.fn();
+        console.log = consoleLogSpy;
+        consoleWarnSpy = vi.fn();
+        console.warn = consoleWarnSpy;
+        consoleErrorSpy = vi.fn();
+        console.error = consoleErrorSpy;
+        consoleTableSpy = vi.fn();
+        console.table = consoleTableSpy;
+        consoleGroupSpy = vi.fn();
+        console.group = consoleGroupSpy;
+        consoleGroupEndSpy = vi.fn();
+        console.groupEnd = consoleGroupEndSpy;
+    }
 
     beforeEach(() => {
-        // Reset spies before each test
-        consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-        consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-        consoleTableSpy = vi.spyOn(console, 'table').mockImplementation(() => {});
-        consoleGroupSpy = vi.spyOn(console, 'group').mockImplementation(() => {});
-        consoleGroupEndSpy = vi.spyOn(console, 'groupEnd').mockImplementation(() => {});
-        performanceNowSpy = vi.spyOn(performance, 'now').mockReturnValue(1000);
+        setupSpies();
+        vi.clearAllMocks();
+        log = new AvLog({ logLevel: 1, logTime: true });
     });
 
     describe('constructor', () => {
@@ -30,7 +43,7 @@ describe('AvLog', () => {
 
         it('should initialize with custom options', () => {
             const options: AvLogOptions = {
-                debugLevel: 1,
+                logLevel: 1,
                 logTime: true,
                 logWithType: true,
             };
@@ -39,12 +52,12 @@ describe('AvLog', () => {
         });
     });
 
-    describe('logging methods with debugLevel 0', () => {
+    describe('logging methods with logLevel 0', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 0 });
+            log = new AvLog({ logLevel: 0 });
         });
 
-        it('should not log anything when debugLevel is 0', () => {
+        it('should not log anything when logLevel is 0', () => {
             log.tf('test');
             log.tfc('test');
             log.tfw('test');
@@ -62,9 +75,9 @@ describe('AvLog', () => {
         });
     });
 
-    describe('logging methods with debugLevel 1', () => {
+    describe('logging methods with logLevel 1', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 1 });
+            log = new AvLog({ logLevel: 1 });
         });
 
         it('should log basic message with tf', () => {
@@ -122,7 +135,7 @@ describe('AvLog', () => {
 
     describe('function tracing', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 1, logTime: true });
+            log = new AvLog({ logLevel: 1, logTime: true });
             performanceNowSpy.mockReturnValueOnce(1000);
         });
 
@@ -170,17 +183,9 @@ describe('AvLog', () => {
 
     describe('function tracking', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 1 });
-            // Clear all mocks before each test
+            log = new AvLog({ logLevel: 1 });
             vi.clearAllMocks();
-            // Reset spies
-            consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-            consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-            consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-            consoleTableSpy = vi.spyOn(console, 'table').mockImplementation(() => {});
-            consoleGroupSpy = vi.spyOn(console, 'group').mockImplementation(() => {});
-            consoleGroupEndSpy = vi.spyOn(console, 'groupEnd').mockImplementation(() => {});
-            performanceNowSpy = vi.spyOn(performance, 'now').mockReturnValue(1000);
+            setupSpies();
         });
 
         it('should track functions properly with matching tfi/tfo calls', () => {
@@ -224,8 +229,7 @@ describe('AvLog', () => {
 
     describe('async function tracking', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 1, logTime: true });
-            vi.spyOn(console, 'log');
+            log = new AvLog({ logLevel: 1, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
@@ -238,16 +242,16 @@ describe('AvLog', () => {
                 1,
                 '%c',
                 'font-weight: bold',
-                '⟳ asyncOp() started',
-                '',
+                '⟳ asyncOp()',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
                 '%c',
                 'font-weight: bold',
-                '✓ asyncOp() completed (1000ms)',
-                '',
+                '✓ asyncOp() [1.0 s]',
+                ''
             );
         });
 
@@ -263,32 +267,32 @@ describe('AvLog', () => {
                 1,
                 '%c',
                 'font-weight: bold',
-                '⟳ outerAsync() started',
-                '',
+                '⟳ outerAsync()',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
                 '%c',
                 'font-weight: bold',
-                '  ⟳ innerAsync() started',
-                '',
+                '  ⟳ innerAsync()',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
                 '%c',
                 'font-weight: bold',
-                '  ✓ innerAsync() completed (1000ms)',
-                '',
+                '  ✓ innerAsync() [1.0 s]',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
                 '%c',
                 'font-weight: bold',
-                '✓ outerAsync() completed (1000ms)',
-                '',
+                '✓ outerAsync() [1.0 s]',
+                ''
             );
         });
 
@@ -304,32 +308,32 @@ describe('AvLog', () => {
                 1,
                 '%c',
                 'font-weight: bold',
-                '⟳ asyncOp() started',
-                '',
+                '⟳ asyncOp()',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
                 '%c',
                 'font-weight: bold',
-                '  ⟳ asyncOp() started',
-                '',
+                '  ⟳ asyncOp()',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
                 '%c',
                 'font-weight: bold',
-                '✓ asyncOp() completed (1000ms)',
-                '',
+                '✓ asyncOp() [1.0 s]',
+                ''
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
                 '%c',
                 'font-weight: bold',
-                '  ✓ asyncOp() completed (1000ms)',
-                '',
+                '  ✓ asyncOp() [1.0 s]',
+                ''
             );
         });
 
@@ -341,8 +345,8 @@ describe('AvLog', () => {
                 1,
                 '%c',
                 'font-weight: bold',
-                '⟳ asyncOp1() started',
-                '',
+                '⟳ asyncOp1()',
+                ''
             );
 
             expect(consoleWarnSpy).toHaveBeenCalledWith(
@@ -356,30 +360,38 @@ describe('AvLog', () => {
 
     describe('time formatting', () => {
         beforeEach(() => {
-            log = new AvLog({ debugLevel: 1, logTime: true });
-            // Push initial time to simulate function entry
-            log.tfi('test');
+            log = new AvLog({ logLevel: 1, logTime: true });
+            setupSpies();
         });
 
         it('should format milliseconds correctly', () => {
-            performanceNowSpy.mockReturnValue(1500); // 500ms difference from initial 1000
+            performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(1500);
+            log.tfi('test');
             log.tfo('test');
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 '%c<-- test [500.0 ms]',
-                'font-weight: bold',
+                'font-weight: bold'
             );
         });
 
         it('should format seconds correctly', () => {
-            performanceNowSpy.mockReturnValue(2500); // 1.5s difference from initial 1000
+            performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(2500);
+            log.tfi('test');
             log.tfo('test');
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [1.500 s]', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c<-- test [1.500 s]',
+                'font-weight: bold'
+            );
         });
 
         it('should format minutes correctly', () => {
-            performanceNowSpy.mockReturnValue(91000); // 1.5 minutes difference from initial 1000
+            performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(91000);
+            log.tfi('test');
             log.tfo('test');
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [01:30.0]', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c<-- test [01:30.0]',
+                'font-weight: bold'
+            );
         });
     });
 });
