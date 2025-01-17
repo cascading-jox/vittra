@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4](https://github.com/cascading-jox/vittra/compare/v0.2.3...v0.2.4) (2025-01-17)
+
+
+### Bug Fixes
+
+* remove tripple slash for jsr compatibility ([ee7788e](https://github.com/cascading-jox/vittra/commit/ee7788e9dec3ca3c33e07b4ab91aaabc1d00a9da))
+
 ## [0.2.3](https://github.com/cascading-jox/vittra/compare/v0.2.2...v0.2.3) (2025-01-17)
 
 
