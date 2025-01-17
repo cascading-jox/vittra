@@ -7,7 +7,6 @@ All notable changes to this project will be documented in this file.
 ### Bug Fixes
 
 * ci trigger commit ([b7e523e](https://github.com/cascading-jox/vittra/commit/b7e523e8d99a84f8a46628ec148aef0fdedf9fc9))
-* trigger ci ([7b25953](https://github.com/cascading-jox/vittra/commit/7b25953dc7398802bcbcb2270f8e1deda3bad6c2))
 
 ## [0.2.1](https://github.com/cascading-jox/vittra/compare/v0.2.0...v0.2.1) (2025-01-17)
 
@@ -25,7 +24,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-Initial release of vittra:
+* initial commit ([10c7e88](https://github.com/cascading-jox/vittra/commit/10c7e88b7ba62297ec9b5bf4114fd8f127bb2282))
 
 #### Core Features
 * Context-aware depth tracking for nested function calls
