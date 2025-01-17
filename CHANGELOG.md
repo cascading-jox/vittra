@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.0 (2025-01-17)
+
+
+### Features
+
+* add support for URL param override for logLevel ([d8ba490](https://github.com/cascading-jox/vittra/commit/d8ba490d225c5d9978142a95da6266da0b404bc7))
+* initial commit ([10c7e88](https://github.com/cascading-jox/vittra/commit/10c7e88b7ba62297ec9b5bf4114fd8f127bb2282))
+
+
+### Bug Fixes
+
+* ci trigger commit ([b7e523e](https://github.com/cascading-jox/vittra/commit/b7e523e8d99a84f8a46628ec148aef0fdedf9fc9))
+* remove extra space before logging objects ([d01665a](https://github.com/cascading-jox/vittra/commit/d01665afbcb73efe722b6a579e906570a80a5abe))
+
 ## [0.2.1](https://github.com/cascading-jox/av-log/compare/v0.2.0...v0.2.1) (2025-01-17)
 
 ### Bug Fixes
