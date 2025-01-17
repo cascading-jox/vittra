@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1](https://github.com/cascading-jox/av-log/compare/v0.2.0...v0.2.1) (2025-01-17)
+
+
+### Bug Fixes
+
+* remove extra space before logging objects ([d01665a](https://github.com/cascading-jox/av-log/commit/d01665afbcb73efe722b6a579e906570a80a5abe))
+
 ## [0.2.0](https://github.com/cascading-jox/av-log/compare/v0.1.0...v0.2.0) (2025-01-17)
 
 ### Features
