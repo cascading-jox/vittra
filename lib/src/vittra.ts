@@ -21,11 +21,11 @@ export interface VittraOptions {
  * All methods use a 't' prefix for "trace", followed by their specific function:
  * - tfi: trace function in (entry)
  * - tfo: trace function out (exit)
- * - tf:  trace format (basic logging)
- * - tfc: trace format clean (no prefix)
- * - tfw: trace format warning
- * - tfe: trace format error
- * - tft: trace format table
+ * - tf:  trace function (basic logging)
+ * - tfc: trace function clean (no prefix)
+ * - tfw: trace function warning
+ * - tfe: trace function error
+ * - tft: trace function table
  *
  * Example usage:
  * ```typescript
@@ -442,7 +442,7 @@ export class Vittra {
     }
 
     /**
-     * Trace format: Log a string with `+` prefix
+     * Trace function: Log a string with `+` prefix
      * @param valuesToLog The values to log (same parameters as console.log)
      *
      * Example:
@@ -456,7 +456,7 @@ export class Vittra {
     }
 
     /**
-     * Trace format clean: Log a string without type formatting and +
+     * Trace function clean: Log a string without type formatting and +
      * @param valuesToLog The values to log (same parameters as console.log)
      *
      * Example:
@@ -469,7 +469,7 @@ export class Vittra {
     }
 
     /**
-     * Trace format warning: Log a warning string with `+` prefix
+     * Trace function warning: Log a warning string with `+` prefix
      * @param valuesToLog The values to log (same parameters as console.log)
      *
      * Example:
@@ -482,7 +482,7 @@ export class Vittra {
     }
 
     /**
-     * Trace format error: Log an error string with `+` prefix
+     * Trace function error: Log an error string with `+` prefix
      * @param valuesToLog The values to log (same parameters as console.log)
      *
      * Example:
@@ -495,7 +495,7 @@ export class Vittra {
     }
 
     /**
-     * Trace format table: Log a table. Does not output delta time.
+     * Trace function table: Log a table. Does not output delta time.
      * @param tabularData The data to display in tabular format
      * @param properties Optional array of property names to include in the output
      *
