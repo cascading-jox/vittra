@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0](https://github.com/cascading-jox/vittra/compare/v0.4.0...v0.5.0) (2026-07-10)
+
+
+### Features
+
+* show a startup banner when logging is enabled ([5676e91](https://github.com/cascading-jox/vittra/commit/5676e9170074897577f88e3f45ba576578905e5a))
+
+
+### Bug Fixes
+
+* declare types in the exports map and drop the engines field ([7db9291](https://github.com/cascading-jox/vittra/commit/7db92913b9c525059124b52f6e1e322d9b8fcc30))
+
+
+### Continuous Integration
+
+* match release tags without component prefix ([2a24945](https://github.com/cascading-jox/vittra/commit/2a24945210a2f7f0acd50e8c8bf06594026aff53))
+* run release-please in manifest mode ([17650c7](https://github.com/cascading-jox/vittra/commit/17650c72a0f47713572c62dc3db5c64fca9e106b))
+
 ## [0.4.0](https://github.com/cascading-jox/vittra/compare/v0.3.0...v0.4.0) (2026-07-10)
 
 

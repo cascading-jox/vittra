@@ -94,7 +94,7 @@ const COMPLETED_OPS_LIMIT = 50;
 const LOG_LEVEL_KEY = 'vittraLogLevel';
 
 /** Library version — updated by release automation */
-const VITTRA_VERSION = '0.4.0'; // x-release-please-version
+const VITTRA_VERSION = '0.5.0'; // x-release-please-version
 
 /** One-line startup banner confirming that tracing is active and why */
 function printBanner(level: number, levelSource: string): void {
