@@ -5,7 +5,6 @@ export default defineConfig({
     build: {
         target: 'esnext',
         sourcemap: true,
-        minify: 'esbuild',
         lib: {
             entry: resolve(__dirname, 'lib/src/vittra.ts'),
             formats: ['es'],
@@ -15,7 +14,6 @@ export default defineConfig({
             output: {
                 sourcemapExcludeSources: true,
                 preserveModules: false,
-                inlineDynamicImports: true,
             },
         },
         copyPublicDir: false,
