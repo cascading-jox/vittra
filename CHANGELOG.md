@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0](https://github.com/cascading-jox/vittra/compare/v0.3.0...v0.4.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* log level 1 now shows only warnings and errors; use level 2 for the full trace
+
+### Features
+
+* add tfa async wrapper with buffered per-operation logs ([761b5db](https://github.com/cascading-jox/vittra/commit/761b5db9ff53b0561b3043dc6ae081c3ce52eb3e))
+* add tfat async operations table and checkUnclosedAsyncOps ([761b5db](https://github.com/cascading-jox/vittra/commit/761b5db9ff53b0561b3043dc6ae081c3ce52eb3e))
+* gate output by log level ([761b5db](https://github.com/cascading-jox/vittra/commit/761b5db9ff53b0561b3043dc6ae081c3ce52eb3e))
+
+
+### Bug Fixes
+
+* replace async indentation with per-operation ids and colors ([761b5db](https://github.com/cascading-jox/vittra/commit/761b5db9ff53b0561b3043dc6ae081c3ce52eb3e))
+
 ## [0.3.0](https://github.com/cascading-jox/vittra/compare/v0.2.4...v0.3.0) (2026-07-10)
 
 
