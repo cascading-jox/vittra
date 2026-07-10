@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0](https://github.com/cascading-jox/vittra/compare/v0.2.4...v0.3.0) (2026-07-10)
+
+
+### Features
+
+* add reset method to clear all tracing state ([e57f8c7](https://github.com/cascading-jox/vittra/commit/e57f8c7d96df42d245aaaee635546b9321921e45))
+* add setLogLevel runtime setter with opt-in persistence ([e57f8c7](https://github.com/cascading-jox/vittra/commit/e57f8c7d96df42d245aaaee635546b9321921e45))
+
+
+### Bug Fixes
+
+* auto-close unclosed functions on mismatched tfo calls ([e57f8c7](https://github.com/cascading-jox/vittra/commit/e57f8c7d96df42d245aaaee635546b9321921e45))
+* prevent log calls from throwing and preserve Error values ([e57f8c7](https://github.com/cascading-jox/vittra/commit/e57f8c7d96df42d245aaaee635546b9321921e45))
+* zero-pad milliseconds in formatTime durations ([e57f8c7](https://github.com/cascading-jox/vittra/commit/e57f8c7d96df42d245aaaee635546b9321921e45))
+
 ## [0.2.4](https://github.com/cascading-jox/vittra/compare/v0.2.3...v0.2.4) (2025-01-17)
 
 
