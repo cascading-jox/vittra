@@ -1,6 +1,6 @@
 {
     "name": "vittra",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Simple browser log-tracing library",
     "type": "module",
     "main": "dist/vittra.js",
