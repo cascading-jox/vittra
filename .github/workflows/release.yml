@@ -17,11 +17,11 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # Manifest mode: driven by release-please-config.json + .release-please-manifest.json
       - uses: googleapis/release-please-action@v4
         id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: node
           
       # The following steps will only run if a release was created
       - uses: actions/checkout@v4
