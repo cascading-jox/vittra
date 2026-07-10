@@ -17,7 +17,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           release-type: node
           
       # The following steps will only run if a release was created
@@ -27,7 +27,7 @@ jobs:
       - uses: pnpm/action-setup@v2
         if: ${{ steps.release.outputs.release_created }}
         with:
-          version: 9
+          version: 11
           
       - uses: actions/setup-node@v4
         if: ${{ steps.release.outputs.release_created }}
