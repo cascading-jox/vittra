@@ -1,15 +1,12 @@
 /**
- * Type definitions for log levels and context
- */
-export type LogLevel = 'info' | 'warning' | 'error' | 'debug';
-
-/**
  * Configuration options for Vittra
  */
 export interface VittraOptions {
     /**
-     * 0 (default) disables logging, any higher value enables it. When omitted,
-     * a level persisted via setLogLevel(level, { persist: true }) is used if present.
+     * 0 (default) disables logging, 1 shows warnings and errors only,
+     * 2 shows the full trace. Levels above 2 are reserved and currently
+     * behave like 2. When omitted, a level persisted via
+     * setLogLevel(level, { persist: true }) is used if present.
      */
     logLevel?: number;
     /** Set true to enable time logging for all functions (default false) */
@@ -17,6 +14,79 @@ export interface VittraOptions {
     /** Set true to enable explicit string and number formatting */
     logWithType?: boolean;
 }
+
+/**
+ * Scoped logger handed to a tfa callback. Everything logged through it is
+ * buffered into that async operation and replayed as one block when the
+ * operation completes, so concurrent operations never interleave their logs.
+ */
+export interface VittraOpLogger {
+    tf(...valuesToLog: unknown[]): void;
+    tfc(...valuesToLog: unknown[]): void;
+    tfw(...valuesToLog: unknown[]): void;
+    tfe(...valuesToLog: unknown[]): void;
+    tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void;
+    tfa<T>(
+        func: string,
+        fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+    ): Promise<T>;
+}
+
+interface BufferedLog {
+    kind: 'log';
+    level: 'log' | 'clean' | 'warn' | 'error';
+    values: unknown[];
+    /** ms since the operation started, for Δ display at replay */
+    delta: number;
+}
+
+interface BufferedTable {
+    kind: 'table';
+    data: Record<string, unknown> | Array<unknown>;
+    properties?: string[];
+}
+
+interface BufferedChild {
+    kind: 'child';
+    childId: number;
+}
+
+type BufferedEntry = BufferedLog | BufferedTable | BufferedChild;
+
+interface AsyncOp {
+    id: number;
+    func: string;
+    start: number;
+    parent: number | null;
+    buffer: BufferedEntry[];
+    status: 'pending' | 'done' | 'failed';
+    resultValues: unknown[];
+    error?: unknown;
+    duration?: number;
+}
+
+interface CompletedOp {
+    id: number;
+    func: string;
+    parent: number | null;
+    status: 'done' | 'failed';
+    duration: number;
+}
+
+/** Per-operation colors so entry and completion lines pair visually */
+const OP_COLORS = [
+    '#2196f3',
+    '#e91e63',
+    '#4caf50',
+    '#ff9800',
+    '#9c27b0',
+    '#00bcd4',
+    '#f44336',
+    '#795548',
+];
+
+/** How many completed operations tfat() keeps for display */
+const COMPLETED_OPS_LIMIT = 50;
 
 /** Name of both the URL parameter and the localStorage key for the log level */
 const LOG_LEVEL_KEY = 'vittraLogLevel';
@@ -45,6 +115,18 @@ function readUrlLogLevel(): number | null {
         // Silently handle any errors if URL parsing fails
     }
     return null;
+}
+
+/** Intersperse ',' between values so console output reads like an argument list */
+function intersperseCommas(values: unknown[]): unknown[] {
+    const result: unknown[] = [];
+    for (let i = 0; i < values.length; i++) {
+        result.push(values[i]);
+        if (i !== values.length - 1) {
+            result.push(',');
+        }
+    }
+    return result;
 }
 
 /**
@@ -76,14 +158,18 @@ function readPersistedLogLevel(): number | null {
  * - tfw: trace function warning
  * - tfe: trace function error
  * - tft: trace function table
+ * - tfa: trace function async (wraps a whole async operation)
+ * - tfat: trace function async table (pending + recent operations)
  *
  * Runtime control:
  * - setLogLevel: change the log level on demand (optionally persisted)
  * - reset: clear all tracing state
  *
+ * Log levels: 0 = off, 1 = warnings and errors, 2 = full trace, 3+ reserved.
+ *
  * Example usage:
  * ```typescript
- * const log = new Vittra({ logLevel: 1, logTime: true });
+ * const log = new Vittra({ logLevel: 2, logTime: true });
  *
  * function processUser(userId: string) {
  *   log.tfi('processUser', userId);  // --> processUser( "123" )
@@ -107,9 +193,11 @@ export class Vittra {
     private boldStyle: string;
     private timers: number[];
     private functionStack: string[] = []; // Track function entries
-    private asyncOps: Map<string, { start: number; indent: number; id: number }> = new Map();
+    private asyncOps: Map<number, AsyncOp> = new Map();
+    private completedOps: CompletedOp[] = [];
     private nextAsyncId: number = 1;
-    private currentIndent: number = 0;
+    /** Ops in their synchronous start phase — parents for nested tfa calls */
+    private currentOpStack: number[] = [];
 
     constructor(options: VittraOptions = {}) {
         // URL parameter overrides the option; an omitted option falls back to a persisted level
@@ -216,7 +304,9 @@ export class Vittra {
      * Internal method to handle different types of console output
      */
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
-        if (this.logLevel === 0) return;
+        // Level 1 shows warnings and errors only; plain logs need level 2
+        const requiredLevel = mode === 'tfw' || mode === 'tfe' ? 1 : 2;
+        if (this.logLevel < requiredLevel) return;
 
         const objectClone = this.snapshot(valuesToLog);
         const lastTimer = this.timers[this.timers.length - 1];
@@ -308,39 +398,25 @@ export class Vittra {
      * ```
      */
     tfia(func: string, ...args: unknown[]): number {
-        if (this.logLevel === 0) return this.nextAsyncId++;
-
-        const indent = this.currentIndent;
-        this.currentIndent += 2;
-
-        const startTime = this.logTime ? performance.now() : 0;
         const opId = this.nextAsyncId++;
-        const key = `${func}:${opId}`;
+        if (this.logLevel < 2) return opId;
 
-        this.asyncOps.set(key, { start: startTime, indent, id: opId });
+        this.asyncOps.set(opId, {
+            id: opId,
+            func,
+            start: performance.now(),
+            parent: null,
+            buffer: [],
+            status: 'pending',
+            resultValues: [],
+        });
 
-        const prefix = ' '.repeat(indent);
-        const tmpArray: unknown[] = [];
-        if (args != null && args.length > 0) {
-            if (typeof args === 'number' || typeof args === 'string') {
-                tmpArray.push(args);
-            } else {
-                let i = 0;
-                for (const key in args) {
-                    if (Object.prototype.hasOwnProperty.call(args, key)) {
-                        const element = args[key];
-                        tmpArray.push(element);
-                        if (Object.keys(args).length - 1 !== i) {
-                            tmpArray.push(',');
-                        }
-                        ++i;
-                    }
-                }
-            }
-            const objectClone = this.snapshot(tmpArray);
-            console.log(`%c${prefix}⟳ ${func}(`, this.boldStyle, ...objectClone, ')');
+        const style = this.opStyle(opId);
+        if (args.length > 0) {
+            const objectClone = this.snapshot(intersperseCommas(args));
+            console.log(`%c⟳ ${func} #${opId} (`, style, ...objectClone, ')');
         } else {
-            console.log(`%c${prefix}⟳ ${func}()`, this.boldStyle);
+            console.log(`%c⟳ ${func} #${opId} ()`, style);
         }
 
         return opId;
@@ -381,48 +457,269 @@ export class Vittra {
      * ```
      */
     tfoa(func: string, opId: number, ...returnValues: unknown[]): void {
-        if (this.logLevel === 0) return;
+        if (this.logLevel < 2) return;
 
-        const key = `${func}:${opId}`;
-        const op = this.asyncOps.get(key);
-        if (!op) {
+        const op = this.asyncOps.get(opId);
+        if (!op || op.func !== func) {
             this.tfw(`Warning: tfoa called for '${func}' (ID: ${opId}) but no matching tfia found`);
             return;
         }
 
-        let runTimeString = '';
-        if (this.logTime) {
-            const duration = performance.now() - op.start;
-            runTimeString = ` [${this.formatTime(duration)}]`;
+        const duration = performance.now() - op.start;
+        const runTimeString = this.logTime ? ` [${this.formatTime(duration)}]` : '';
+        const style = this.opStyle(opId);
+        if (returnValues.length > 0) {
+            const objectClone = this.snapshot(intersperseCommas(returnValues));
+            console.log(`%c✓ ${func} #${opId}${runTimeString} =`, style, ...objectClone);
+        } else {
+            console.log(`%c✓ ${func} #${opId}${runTimeString}`, style);
         }
 
-        const prefix = ' '.repeat(op.indent);
-        const tmpArray: unknown[] = [];
-        if (returnValues != null && returnValues.length > 0) {
-            if (typeof returnValues === 'number' || typeof returnValues === 'string') {
-                tmpArray.push(returnValues);
+        this.recordCompleted(op, 'done', duration);
+        this.asyncOps.delete(opId);
+    }
+
+    /**
+     * Trace function async - wraps a whole async operation: logs entry (⟳)
+     * immediately, buffers everything logged through the scoped logger, and
+     * replays the buffer as one grouped block when the operation settles —
+     * ✓ on success, ✗ on failure (failures rethrow). Concurrent operations
+     * therefore never interleave their internal logs.
+     *
+     * Accepts either a callback receiving the scoped logger, or a bare
+     * promise for one-line cases.
+     *
+     * @param func The name of the operation
+     * @param fnOrPromise Callback receiving a scoped logger, or a promise to time
+     * @returns The callback's return value (or the promise's resolution)
+     *
+     * Example:
+     * ```typescript
+     * const user = await log.tfa('fetchUser', async (t) => {
+     *     const res = await fetch(url);
+     *     t.tf('got response');            // buffered into this operation
+     *     return res.json();
+     * });
+     *
+     * const res = await log.tfa('GET /user', fetch(url)); // one-liner
+     * ```
+     */
+    tfa<T>(
+        func: string,
+        fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+    ): Promise<T> {
+        const parentId =
+            this.currentOpStack.length > 0
+                ? this.currentOpStack[this.currentOpStack.length - 1]
+                : null;
+        return this.runOp(func, fnOrPromise, parentId);
+    }
+
+    private runOp<T>(
+        func: string,
+        fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+        parentId: number | null,
+    ): Promise<T> {
+        if (this.logLevel < 2) {
+            if (typeof fnOrPromise === 'function') {
+                return Promise.resolve(fnOrPromise(this.noopOpLogger));
+            }
+            return Promise.resolve(fnOrPromise);
+        }
+
+        const opId = this.nextAsyncId++;
+        const op: AsyncOp = {
+            id: opId,
+            func,
+            start: performance.now(),
+            parent: parentId,
+            buffer: [],
+            status: 'pending',
+            resultValues: [],
+        };
+        this.asyncOps.set(opId, op);
+
+        // Entry line: recorded inside a pending parent, printed live otherwise
+        const parent = parentId !== null ? this.asyncOps.get(parentId) : undefined;
+        if (parent && parent.status === 'pending') {
+            parent.buffer.push({ kind: 'child', childId: opId });
+        } else {
+            op.parent = null;
+            console.log(`%c⟳ ${func} #${opId}`, this.opStyle(opId));
+        }
+
+        let result: T | Promise<T>;
+        if (typeof fnOrPromise === 'function') {
+            this.currentOpStack.push(opId);
+            try {
+                result = fnOrPromise(this.createOpLogger(op));
+            } catch (error) {
+                this.currentOpStack.pop();
+                this.completeOp(op, 'failed', [], error);
+                throw error;
+            }
+            this.currentOpStack.pop();
+        } else {
+            result = fnOrPromise;
+        }
+
+        return Promise.resolve(result).then(
+            (value) => {
+                this.completeOp(op, 'done', value === undefined ? [] : [value]);
+                return value;
+            },
+            (error) => {
+                this.completeOp(op, 'failed', [], error);
+                throw error;
+            },
+        );
+    }
+
+    private completeOp(
+        op: AsyncOp,
+        status: 'done' | 'failed',
+        resultValues: unknown[],
+        error?: unknown,
+    ): void {
+        if (op.status !== 'pending') return;
+        op.status = status;
+        op.resultValues = this.snapshot(resultValues);
+        op.error = error;
+        op.duration = performance.now() - op.start;
+        this.recordCompleted(op, status, op.duration);
+
+        const parent = op.parent !== null ? this.asyncOps.get(op.parent) : undefined;
+        if (parent && parent.status === 'pending') {
+            return; // replayed inline when the parent completes
+        }
+        if (this.logLevel >= 2) {
+            this.replayOp(op, true);
+        }
+        this.asyncOps.delete(op.id);
+    }
+
+    /**
+     * Print a completed operation's block: header, buffered lines in order,
+     * completed children inlined as nested blocks at their start position.
+     */
+    private replayOp(op: AsyncOp, standalone: boolean): void {
+        const style = this.opStyle(op.id);
+        const mark = op.status === 'failed' ? '✗' : '✓';
+        const badge = standalone && op.parent !== null ? ` ←#${op.parent}` : '';
+        const runTimeString =
+            this.logTime && op.duration !== undefined ? ` [${this.formatTime(op.duration)}]` : '';
+        const header = `%c${mark} ${op.func} #${op.id}${badge}${runTimeString}`;
+
+        if (op.resultValues.length > 0) {
+            console.group(`${header} =`, style, ...op.resultValues);
+        } else {
+            console.group(header, style);
+        }
+
+        for (const entry of op.buffer) {
+            if (entry.kind === 'log') {
+                const deltaString = this.logTime ? `  [Δ ${this.formatTime(entry.delta)}]` : '';
+                if (entry.level === 'clean') {
+                    console.log('%c', this.boldStyle, ...entry.values, deltaString);
+                } else if (entry.level === 'warn') {
+                    console.warn('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                } else if (entry.level === 'error') {
+                    console.error('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                } else {
+                    console.log('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                }
+            } else if (entry.kind === 'table') {
+                console.table(entry.data, entry.properties);
             } else {
-                let i = 0;
-                for (const key in returnValues) {
-                    if (Object.prototype.hasOwnProperty.call(returnValues, key)) {
-                        const element = returnValues[key];
-                        tmpArray.push(element);
-                        if (Object.keys(returnValues).length - 1 !== i) {
-                            tmpArray.push(',');
-                        }
-                        ++i;
-                    }
+                const child = this.asyncOps.get(entry.childId);
+                if (child && child.status !== 'pending') {
+                    this.replayOp(child, false);
+                    this.asyncOps.delete(child.id);
+                } else if (child) {
+                    console.log(`%c⟳ ${child.func} #${child.id} (pending)`, this.opStyle(child.id));
                 }
             }
-            const objectClone = this.snapshot(tmpArray);
-            console.log(`%c${prefix}✓ ${func}()${runTimeString} =`, this.boldStyle, ...objectClone);
-        } else {
-            console.log(`%c${prefix}✓ ${func}()${runTimeString}`, this.boldStyle);
         }
 
-        this.asyncOps.delete(key);
-        this.currentIndent = op.indent;
+        if (op.status === 'failed' && op.error !== undefined) {
+            console.error(op.error);
+        }
+        console.groupEnd();
     }
+
+    private createOpLogger(op: AsyncOp): VittraOpLogger {
+        return {
+            tf: (...values: unknown[]) => this.bufferLog(op, 'log', values),
+            tfc: (...values: unknown[]) => this.bufferLog(op, 'clean', values),
+            tfw: (...values: unknown[]) => this.bufferLog(op, 'warn', values),
+            tfe: (...values: unknown[]) => this.bufferLog(op, 'error', values),
+            tft: (data: Record<string, unknown> | Array<unknown>, properties?: string[]) => {
+                if (this.logLevel < 2) return;
+                if (op.status === 'pending') {
+                    op.buffer.push({ kind: 'table', data, properties });
+                } else {
+                    this.tft(data, properties);
+                }
+            },
+            tfa: <T>(
+                childFunc: string,
+                fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+            ): Promise<T> => this.runOp(childFunc, fnOrPromise, op.id),
+        };
+    }
+
+    private bufferLog(op: AsyncOp, level: BufferedLog['level'], values: unknown[]): void {
+        const requiredLevel = level === 'warn' || level === 'error' ? 1 : 2;
+        if (this.logLevel < requiredLevel) return;
+        if (op.status !== 'pending') {
+            // Operation already replayed — fall back to live logging
+            const mode =
+                level === 'clean'
+                    ? 'tfc'
+                    : level === 'warn'
+                      ? 'tfw'
+                      : level === 'error'
+                        ? 'tfe'
+                        : 'tf';
+            this.logToConsole(mode, values);
+            return;
+        }
+        op.buffer.push({
+            kind: 'log',
+            level,
+            values: this.snapshot(values),
+            delta: performance.now() - op.start,
+        });
+    }
+
+    private recordCompleted(op: AsyncOp, status: 'done' | 'failed', duration: number): void {
+        this.completedOps.push({
+            id: op.id,
+            func: op.func,
+            parent: op.parent,
+            status,
+            duration,
+        });
+        if (this.completedOps.length > COMPLETED_OPS_LIMIT) {
+            this.completedOps.shift();
+        }
+    }
+
+    private opStyle(opId: number): string {
+        return `font-weight: bold; color: ${OP_COLORS[opId % OP_COLORS.length]}`;
+    }
+
+    private noopOpLogger: VittraOpLogger = {
+        tf: () => {},
+        tfc: () => {},
+        tfw: () => {},
+        tfe: () => {},
+        tft: () => {},
+        tfa: <T>(
+            func: string,
+            fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+        ): Promise<T> => this.runOp(func, fnOrPromise, null),
+    };
 
     /**
      * Trace function in: Log function call & increment log depth with 1
@@ -438,7 +735,7 @@ export class Vittra {
      * ```
      */
     tfi(func: string, ...callerArgs: unknown[]): void {
-        if (this.logLevel === 0) return;
+        if (this.logLevel < 2) return;
 
         // Add function to stack
         this.functionStack.push(func);
@@ -492,7 +789,7 @@ export class Vittra {
      * ```
      */
     tfo(func: string, ...returnValues: unknown[]): void {
-        if (this.logLevel === 0) return;
+        if (this.logLevel < 2) return;
 
         if (!this.functionStack.includes(func)) {
             this.tfw(`Warning: tfo called for '${func}' but no matching tfi found`);
@@ -632,7 +929,7 @@ export class Vittra {
      * ```
      */
     tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
-        if (this.logLevel === 0) return;
+        if (this.logLevel < 2) return;
         console.table(tabularData, properties);
     }
 
@@ -648,7 +945,8 @@ export class Vittra {
         this.functionStack = [];
         this.timers = [];
         this.asyncOps.clear();
-        this.currentIndent = 0;
+        this.completedOps = [];
+        this.currentOpStack = [];
     }
 
     /**
@@ -663,5 +961,54 @@ export class Vittra {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Check for async operations that never completed (missing tfoa calls or
+     * tfa callbacks that never settled)
+     * @returns true if there are unclosed async operations
+     */
+    checkUnclosedAsyncOps(): boolean {
+        const pending: string[] = [];
+        for (const op of this.asyncOps.values()) {
+            if (op.status === 'pending') {
+                pending.push(`${op.func} #${op.id}`);
+            }
+        }
+        if (pending.length > 0) {
+            this.tfw(`Warning: Unclosed async operations detected: ${pending.join(', ')}`);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Trace function async table: print a table of async operations —
+     * pending ones first, then recently completed ones. The view into
+     * in-flight operations that buffered logging otherwise hides.
+     */
+    tfat(): void {
+        if (this.logLevel < 2) return;
+        const rows: Array<Record<string, unknown>> = [];
+        for (const op of this.asyncOps.values()) {
+            if (op.status !== 'pending') continue;
+            rows.push({
+                id: op.id,
+                name: op.func,
+                parent: op.parent ?? '',
+                status: 'pending',
+                duration: this.formatTime(performance.now() - op.start),
+            });
+        }
+        for (const done of this.completedOps) {
+            rows.push({
+                id: done.id,
+                name: done.func,
+                parent: done.parent ?? '',
+                status: done.status,
+                duration: this.formatTime(done.duration),
+            });
+        }
+        console.table(rows);
     }
 }

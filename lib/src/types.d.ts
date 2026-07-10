@@ -1,21 +1,35 @@
 /**
- * Type definitions for log levels and context
- */
-export type LogLevel = 'info' | 'warning' | 'error' | 'debug';
-
-/**
  * Configuration options for Vittra
  */
 export interface VittraOptions {
     /**
-     * 0 (default) disables logging, any higher value enables it. When omitted,
-     * a level persisted via setLogLevel(level, { persist: true }) is used if present.
+     * 0 (default) disables logging, 1 shows warnings and errors only,
+     * 2 shows the full trace. Levels above 2 are reserved and currently
+     * behave like 2. When omitted, a level persisted via
+     * setLogLevel(level, { persist: true }) is used if present.
      */
     logLevel?: number;
     /** Set true to enable time logging for all functions (default false) */
     logTime?: boolean;
     /** Set true to enable explicit string and number formatting */
     logWithType?: boolean;
+}
+
+/**
+ * Scoped logger handed to a tfa callback. Everything logged through it is
+ * buffered into that async operation and replayed as one block when the
+ * operation completes.
+ */
+export interface VittraOpLogger {
+    tf(...valuesToLog: unknown[]): void;
+    tfc(...valuesToLog: unknown[]): void;
+    tfw(...valuesToLog: unknown[]): void;
+    tfe(...valuesToLog: unknown[]): void;
+    tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void;
+    tfa<T>(
+        func: string,
+        fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+    ): Promise<T>;
 }
 
 /**
@@ -30,10 +44,14 @@ export interface VittraOptions {
  * - tft: trace function table
  * - tfia: trace function in async (entry for async operations)
  * - tfoa: trace function out async (exit for async operations)
+ * - tfa: trace function async (wraps a whole async operation)
+ * - tfat: trace function async table (pending + recent operations)
  *
  * Runtime control:
  * - setLogLevel: change the log level on demand (optionally persisted)
  * - reset: clear all tracing state
+ *
+ * Log levels: 0 = off, 1 = warnings and errors, 2 = full trace, 3+ reserved.
  */
 export declare class Vittra {
     constructor(options?: VittraOptions);
@@ -67,6 +85,31 @@ export declare class Vittra {
      * @param returnValues - Optional return values from the function
      */
     tfoa(func: string, opId: number, ...returnValues: unknown[]): void;
+
+    /**
+     * Trace function async - wraps a whole async operation: logs entry
+     * immediately, buffers scoped-logger output, replays it as one grouped
+     * block on completion. Accepts a callback or a bare promise.
+     * @param func The name of the operation
+     * @param fnOrPromise Callback receiving a scoped logger, or a promise to time
+     * @returns The callback's return value (or the promise's resolution)
+     */
+    tfa<T>(
+        func: string,
+        fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
+    ): Promise<T>;
+
+    /**
+     * Trace function async table: print a table of pending and recently
+     * completed async operations
+     */
+    tfat(): void;
+
+    /**
+     * Check for async operations that never completed
+     * @returns true if there are unclosed async operations
+     */
+    checkUnclosedAsyncOps(): boolean;
 
     /**
      * Trace function in: Log function call & increment log depth

@@ -32,7 +32,7 @@ describe('Vittra', () => {
     beforeEach(() => {
         setupSpies();
         vi.clearAllMocks();
-        log = new Vittra({ logLevel: 1, logTime: true });
+        log = new Vittra({ logLevel: 2, logTime: true });
     });
 
     describe('constructor', () => {
@@ -75,9 +75,9 @@ describe('Vittra', () => {
         });
     });
 
-    describe('logging methods with logLevel 1', () => {
+    describe('logging methods with logLevel 2', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1 });
+            log = new Vittra({ logLevel: 2 });
         });
 
         it('should log basic message with tf', () => {
@@ -135,7 +135,7 @@ describe('Vittra', () => {
 
     describe('function tracing', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValueOnce(1000);
         });
 
@@ -183,7 +183,7 @@ describe('Vittra', () => {
 
     describe('function tracking', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1 });
+            log = new Vittra({ logLevel: 2 });
             vi.clearAllMocks();
             setupSpies();
         });
@@ -245,32 +245,32 @@ describe('Vittra', () => {
 
     describe('async function tracking', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
-        it('should track async operations with proper indentation and timing', () => {
+        it('should track async operations with ids and timing', () => {
             const opId = log.tfia('asyncOp', 'arg1');
             performanceNowSpy.mockReturnValue(2000);
             log.tfoa('asyncOp', opId, { result: 'success' });
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c⟳ asyncOp(',
-                'font-weight: bold',
+                '%c⟳ asyncOp #1 (',
+                'font-weight: bold; color: #e91e63',
                 'arg1',
                 ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c✓ asyncOp() [1.000 s] =',
-                'font-weight: bold',
+                '%c✓ asyncOp #1 [1.000 s] =',
+                'font-weight: bold; color: #e91e63',
                 { result: 'success' },
             );
         });
 
-        it('should handle nested async operations', () => {
+        it('should log overlapping operations flat with distinct ids', () => {
             const outerOpId = log.tfia('outerAsync', { param: 'outer' });
             const innerOpId = log.tfia('innerAsync', { param: 'inner' });
 
@@ -280,31 +280,31 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c⟳ outerAsync(',
-                'font-weight: bold',
+                '%c⟳ outerAsync #1 (',
+                'font-weight: bold; color: #e91e63',
                 { param: 'outer' },
                 ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c  ⟳ innerAsync(',
-                'font-weight: bold',
+                '%c⟳ innerAsync #2 (',
+                'font-weight: bold; color: #4caf50',
                 { param: 'inner' },
                 ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c  ✓ innerAsync() [1.000 s] =',
-                'font-weight: bold',
+                '%c✓ innerAsync #2 [1.000 s] =',
+                'font-weight: bold; color: #4caf50',
                 { inner: 'result' },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c✓ outerAsync() [1.000 s] =',
-                'font-weight: bold',
+                '%c✓ outerAsync #1 [1.000 s] =',
+                'font-weight: bold; color: #e91e63',
                 { outer: 'result' },
             );
         });
@@ -319,31 +319,31 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 1,
-                '%c⟳ asyncOp(',
-                'font-weight: bold',
+                '%c⟳ asyncOp #1 (',
+                'font-weight: bold; color: #e91e63',
                 { id: 1 },
                 ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c  ⟳ asyncOp(',
-                'font-weight: bold',
+                '%c⟳ asyncOp #2 (',
+                'font-weight: bold; color: #4caf50',
                 { id: 2 },
                 ')',
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c✓ asyncOp() [1.000 s] =',
-                'font-weight: bold',
+                '%c✓ asyncOp #1 [1.000 s] =',
+                'font-weight: bold; color: #e91e63',
                 { result: 1 },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c  ✓ asyncOp() [1.000 s] =',
-                'font-weight: bold',
+                '%c✓ asyncOp #2 [1.000 s] =',
+                'font-weight: bold; color: #4caf50',
                 { result: 2 },
             );
         });
@@ -353,12 +353,16 @@ describe('Vittra', () => {
             performanceNowSpy.mockReturnValue(2000);
             log.tfoa('asyncOp', opId);
 
-            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ asyncOp()', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                1,
+                '%c⟳ asyncOp #1 ()',
+                'font-weight: bold; color: #e91e63',
+            );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c✓ asyncOp() [1.000 s]',
-                'font-weight: bold',
+                '%c✓ asyncOp #1 [1.000 s]',
+                'font-weight: bold; color: #e91e63',
             );
         });
 
@@ -366,7 +370,11 @@ describe('Vittra', () => {
             const opId = log.tfia('asyncOp1');
             log.tfoa('asyncOp2', opId);
 
-            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ asyncOp1()', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                1,
+                '%c⟳ asyncOp1 #1 ()',
+                'font-weight: bold; color: #e91e63',
+            );
 
             expect(consoleWarnSpy).toHaveBeenCalledWith(
                 '%c+ ',
@@ -379,7 +387,7 @@ describe('Vittra', () => {
 
     describe('time formatting', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1, logTime: true });
+            log = new Vittra({ logLevel: 2, logTime: true });
             setupSpies();
         });
 
@@ -430,7 +438,7 @@ describe('Vittra', () => {
 
     describe('value snapshotting', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1 });
+            log = new Vittra({ logLevel: 2 });
         });
 
         it('should not throw when logging a circular object', () => {
@@ -509,7 +517,7 @@ describe('Vittra', () => {
             log.tf('hidden');
             expect(consoleLogSpy).not.toHaveBeenCalled();
 
-            log.setLogLevel(1);
+            log.setLogLevel(2);
             log.tf('visible');
             expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'visible', '');
 
@@ -586,7 +594,7 @@ describe('Vittra', () => {
 
     describe('reset', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1 });
+            log = new Vittra({ logLevel: 2 });
         });
 
         it('should close open groups and clear all tracing state', () => {
@@ -599,12 +607,206 @@ describe('Vittra', () => {
             expect(log.checkUnclosedFunctions()).toBe(false);
         });
 
-        it('should reset async indentation', () => {
+        it('should clear pending async operations', () => {
             log.tfia('first');
             log.reset();
 
+            expect(log.checkUnclosedAsyncOps()).toBe(false);
             log.tfia('second');
-            expect(consoleLogSpy).toHaveBeenLastCalledWith('%c⟳ second()', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenLastCalledWith(
+                '%c⟳ second #2 ()',
+                'font-weight: bold; color: #4caf50',
+            );
+        });
+    });
+
+    describe('logging with logLevel 1', () => {
+        beforeEach(() => {
+            log = new Vittra({ logLevel: 1 });
+        });
+
+        it('should show warnings and errors only', () => {
+            log.tfw('warned');
+            log.tfe('failed');
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'warned', '');
+            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'failed', '');
+        });
+
+        it('should suppress logs, tables, and traces', () => {
+            log.tf('hidden');
+            log.tfc('hidden');
+            log.tft({ a: 1 });
+            log.tfi('func');
+            log.tfo('func');
+            log.tfia('asyncFunc');
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleTableSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+        });
+
+        it('should run a tfa callback without logging and return its value', async () => {
+            const result = await log.tfa('op', async (t) => {
+                t.tf('hidden');
+                return 42;
+            });
+
+            expect(result).toBe(42);
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('tfa async wrapper', () => {
+        const color1 = 'font-weight: bold; color: #e91e63';
+        const color2 = 'font-weight: bold; color: #4caf50';
+
+        beforeEach(() => {
+            log = new Vittra({ logLevel: 2, logTime: true });
+            performanceNowSpy.mockReturnValue(1000);
+        });
+
+        it('should log entry live and replay buffered logs on completion', async () => {
+            const result = await log.tfa('fetchUser', async (t) => {
+                t.tf('got response');
+                return { ok: true };
+            });
+
+            expect(result).toEqual({ ok: true });
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ fetchUser #1', color1);
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ fetchUser #1 [0.0 ms] =', color1, {
+                ok: true,
+            });
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                2,
+                '%c+ ',
+                'font-weight: bold',
+                'got response',
+                '  [Δ 0.0 ms]',
+            );
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('should log a failure block and rethrow', async () => {
+            const error = new Error('boom');
+
+            await expect(
+                log.tfa('fetchUser', async () => {
+                    throw error;
+                }),
+            ).rejects.toThrow('boom');
+
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✗ fetchUser #1 [0.0 ms]', color1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(error);
+        });
+
+        it('should accept a bare promise', async () => {
+            const result = await log.tfa('GET /user', Promise.resolve(42));
+
+            expect(result).toBe(42);
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c⟳ GET /user #1', color1);
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ GET /user #1 [0.0 ms] =', color1, 42);
+        });
+
+        it('should inline a nested operation that completed before its parent', async () => {
+            await log.tfa('parent', async (t) => {
+                await t.tfa('child', async (t2) => {
+                    t2.tf('inner');
+                });
+                t.tf('after child');
+            });
+
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ parent #1', color1);
+            expect(consoleGroupSpy).toHaveBeenNthCalledWith(1, '%c✓ parent #1 [0.0 ms]', color1);
+            expect(consoleGroupSpy).toHaveBeenNthCalledWith(2, '%c✓ child #2 [0.0 ms]', color2);
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                2,
+                '%c+ ',
+                'font-weight: bold',
+                'inner',
+                '  [Δ 0.0 ms]',
+            );
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                3,
+                '%c+ ',
+                'font-weight: bold',
+                'after child',
+                '  [Δ 0.0 ms]',
+            );
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('should print a pending marker and a standalone block for a child that outlives its parent', async () => {
+            let releaseChild!: () => void;
+            const gate = new Promise<void>((resolve) => {
+                releaseChild = resolve;
+            });
+            let childPromise!: Promise<void>;
+
+            await log.tfa('parent', async (t) => {
+                childPromise = t.tfa('child', () => gate);
+            });
+
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ parent #1 [0.0 ms]', color1);
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c⟳ child #2 (pending)', color2);
+
+            releaseChild();
+            await childPromise;
+
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ child #2 ←#1 [0.0 ms]', color2);
+        });
+
+        it('should keep global log calls live during an operation', async () => {
+            await log.tfa('op', async () => {
+                log.tf('live line');
+            });
+
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(1, '%c⟳ op #1', color1);
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                2,
+                '%c+ ',
+                'font-weight: bold',
+                'live line',
+                '',
+            );
+        });
+    });
+
+    describe('async operation table and checks', () => {
+        beforeEach(() => {
+            log = new Vittra({ logLevel: 2, logTime: true });
+            performanceNowSpy.mockReturnValue(1000);
+        });
+
+        it('should list pending and completed operations with tfat', async () => {
+            log.tfia('pendingOp');
+            await log.tfa('doneOp', Promise.resolve(1));
+            log.tfat();
+
+            expect(consoleTableSpy).toHaveBeenCalledWith([
+                expect.objectContaining({ id: 1, name: 'pendingOp', status: 'pending' }),
+                expect.objectContaining({ id: 2, name: 'doneOp', status: 'done' }),
+            ]);
+        });
+
+        it('should detect unclosed async operations', () => {
+            log.tfia('lost');
+
+            expect(log.checkUnclosedAsyncOps()).toBe(true);
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'Warning: Unclosed async operations detected: lost #1',
+                '',
+            );
+        });
+
+        it('should report no unclosed ops after completion', () => {
+            const opId = log.tfia('op');
+            log.tfoa('op', opId);
+
+            expect(log.checkUnclosedAsyncOps()).toBe(false);
         });
     });
 });
