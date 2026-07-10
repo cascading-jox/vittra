@@ -13,6 +13,8 @@ export interface VittraOptions {
     logTime?: boolean;
     /** Set true to enable explicit string and number formatting */
     logWithType?: boolean;
+    /** Set false to suppress the one-line startup banner (only shown when logging is enabled) */
+    banner?: boolean;
 }
 
 /**

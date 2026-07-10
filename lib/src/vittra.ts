@@ -13,6 +13,8 @@ export interface VittraOptions {
     logTime?: boolean;
     /** Set true to enable explicit string and number formatting */
     logWithType?: boolean;
+    /** Set false to suppress the one-line startup banner (only shown when logging is enabled) */
+    banner?: boolean;
 }
 
 /**
@@ -90,6 +92,18 @@ const COMPLETED_OPS_LIMIT = 50;
 
 /** Name of both the URL parameter and the localStorage key for the log level */
 const LOG_LEVEL_KEY = 'vittraLogLevel';
+
+/** Library version — updated by release automation */
+const VITTRA_VERSION = '0.4.0'; // x-release-please-version
+
+/** One-line startup banner confirming that tracing is active and why */
+function printBanner(level: number, levelSource: string): void {
+    console.log(
+        `%c🪽 vittra%c v${VITTRA_VERSION} · level ${level} · via ${levelSource}`,
+        'background:linear-gradient(135deg,#5c6bc0,#26a69a);color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold',
+        'color:#8a8a8a',
+    );
+}
 
 /**
  * Read the log level from the vittraLogLevel URL parameter.
@@ -201,11 +215,23 @@ export class Vittra {
 
     constructor(options: VittraOptions = {}) {
         // URL parameter overrides the option; an omitted option falls back to a persisted level
-        this.logLevel = readUrlLogLevel() ?? options.logLevel ?? readPersistedLogLevel() ?? 0;
+        const urlLogLevel = readUrlLogLevel();
+        const persistedLogLevel = readPersistedLogLevel();
+        this.logLevel = urlLogLevel ?? options.logLevel ?? persistedLogLevel ?? 0;
         this.logTime = options.logTime || false;
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
         this.timers = [];
+
+        if (this.logLevel >= 1 && options.banner !== false) {
+            let levelSource = 'option';
+            if (urlLogLevel !== null) {
+                levelSource = 'url parameter';
+            } else if (options.logLevel === undefined && persistedLogLevel !== null) {
+                levelSource = 'localStorage';
+            }
+            printBanner(this.logLevel, levelSource);
+        }
     }
 
     /**

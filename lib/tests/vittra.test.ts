@@ -32,7 +32,7 @@ describe('Vittra', () => {
     beforeEach(() => {
         setupSpies();
         vi.clearAllMocks();
-        log = new Vittra({ logLevel: 2, logTime: true });
+        log = new Vittra({ banner: false, logLevel: 2, logTime: true });
     });
 
     describe('constructor', () => {
@@ -77,7 +77,7 @@ describe('Vittra', () => {
 
     describe('logging methods with logLevel 2', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2 });
+            log = new Vittra({ banner: false, logLevel: 2 });
         });
 
         it('should log basic message with tf', () => {
@@ -135,7 +135,7 @@ describe('Vittra', () => {
 
     describe('function tracing', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2, logTime: true });
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValueOnce(1000);
         });
 
@@ -183,7 +183,7 @@ describe('Vittra', () => {
 
     describe('function tracking', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2 });
+            log = new Vittra({ banner: false, logLevel: 2 });
             vi.clearAllMocks();
             setupSpies();
         });
@@ -245,7 +245,7 @@ describe('Vittra', () => {
 
     describe('async function tracking', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2, logTime: true });
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
@@ -387,7 +387,7 @@ describe('Vittra', () => {
 
     describe('time formatting', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2, logTime: true });
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
             setupSpies();
         });
 
@@ -438,7 +438,7 @@ describe('Vittra', () => {
 
     describe('value snapshotting', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2 });
+            log = new Vittra({ banner: false, logLevel: 2 });
         });
 
         it('should not throw when logging a circular object', () => {
@@ -594,7 +594,7 @@ describe('Vittra', () => {
 
     describe('reset', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2 });
+            log = new Vittra({ banner: false, logLevel: 2 });
         });
 
         it('should close open groups and clear all tracing state', () => {
@@ -622,7 +622,7 @@ describe('Vittra', () => {
 
     describe('logging with logLevel 1', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 1 });
+            log = new Vittra({ banner: false, logLevel: 1 });
         });
 
         it('should show warnings and errors only', () => {
@@ -663,7 +663,7 @@ describe('Vittra', () => {
         const color2 = 'font-weight: bold; color: #4caf50';
 
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2, logTime: true });
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
@@ -775,7 +775,7 @@ describe('Vittra', () => {
 
     describe('async operation table and checks', () => {
         beforeEach(() => {
-            log = new Vittra({ logLevel: 2, logTime: true });
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
             performanceNowSpy.mockReturnValue(1000);
         });
 
@@ -807,6 +807,31 @@ describe('Vittra', () => {
             log.tfoa('op', opId);
 
             expect(log.checkUnclosedAsyncOps()).toBe(false);
+        });
+    });
+
+    describe('startup banner', () => {
+        it('should print a one-line banner when logging is enabled', () => {
+            log = new Vittra({ logLevel: 2 });
+
+            expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+            const [format, badgeStyle] = consoleLogSpy.mock.calls[0];
+            expect(format).toContain('🪽 vittra');
+            expect(format).toContain('level 2');
+            expect(format).toContain('via option');
+            expect(badgeStyle).toContain('linear-gradient');
+        });
+
+        it('should not print a banner when logging is disabled', () => {
+            log = new Vittra();
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
+        it('should not print a banner when banner is false', () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
         });
     });
 });
