@@ -33,15 +33,11 @@ export default [
       'prettier/prettier': 'error',
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
+      // The TS-aware rule below replaces the core rule, which false-positives
+      // on interface and declaration parameters
+      'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'no-undef': 'error',
-    },
-  },
-  {
-    // Declaration files never "use" their parameters; the core rule is not TS-aware
-    files: ['**/*.d.ts'],
-    rules: {
-      'no-unused-vars': 'off',
     },
   },
   {
