@@ -2,18 +2,68 @@
  * Type definitions for log levels and context
  */
 export type LogLevel = 'info' | 'warning' | 'error' | 'debug';
-export type LogContext = Record<string, unknown>;
 
 /**
  * Configuration options for Vittra
  */
 export interface VittraOptions {
-    /** 0 (default) to disable, 1 to enable logging */
+    /**
+     * 0 (default) disables logging, any higher value enables it. When omitted,
+     * a level persisted via setLogLevel(level, { persist: true }) is used if present.
+     */
     logLevel?: number;
     /** Set true to enable time logging for all functions (default false) */
     logTime?: boolean;
     /** Set true to enable explicit string and number formatting */
     logWithType?: boolean;
+}
+
+/** Name of both the URL parameter and the localStorage key for the log level */
+const LOG_LEVEL_KEY = 'vittraLogLevel';
+
+/**
+ * Read the log level from the vittraLogLevel URL parameter.
+ * Returns null when the parameter is absent or not a valid number.
+ */
+function readUrlLogLevel(): number | null {
+    try {
+        if (
+            typeof globalThis !== 'undefined' &&
+            globalThis.location?.search &&
+            typeof globalThis.URLSearchParams === 'function'
+        ) {
+            const urlParams = new globalThis.URLSearchParams(globalThis.location.search);
+            const param = urlParams.get(LOG_LEVEL_KEY);
+            if (param !== null) {
+                const level = Number(param);
+                if (Number.isFinite(level)) {
+                    return level;
+                }
+            }
+        }
+    } catch {
+        // Silently handle any errors if URL parsing fails
+    }
+    return null;
+}
+
+/**
+ * Read a log level persisted by setLogLevel(level, { persist: true }).
+ * Returns null when nothing valid is stored or localStorage is unavailable.
+ */
+function readPersistedLogLevel(): number | null {
+    try {
+        const stored = globalThis.localStorage?.getItem(LOG_LEVEL_KEY);
+        if (stored != null) {
+            const level = Number(stored);
+            if (Number.isFinite(level)) {
+                return level;
+            }
+        }
+    } catch {
+        // localStorage unavailable (SSR, privacy settings) — nothing persisted
+    }
+    return null;
 }
 
 /**
@@ -26,6 +76,10 @@ export interface VittraOptions {
  * - tfw: trace function warning
  * - tfe: trace function error
  * - tft: trace function table
+ *
+ * Runtime control:
+ * - setLogLevel: change the log level on demand (optionally persisted)
+ * - reset: clear all tracing state
  *
  * Example usage:
  * ```typescript
@@ -58,22 +112,8 @@ export class Vittra {
     private currentIndent: number = 0;
 
     constructor(options: VittraOptions = {}) {
-        // Check URL parameter for log level override
-        let logLevelParam = null;
-        try {
-            if (
-                typeof globalThis !== 'undefined' &&
-                globalThis.location?.search &&
-                typeof globalThis.URLSearchParams === 'function'
-            ) {
-                const urlParams = new globalThis.URLSearchParams(globalThis.location.search);
-                logLevelParam = urlParams.get('vittraLogLevel');
-            }
-        } catch {
-            // Silently handle any errors if URL parsing fails
-        }
-
-        this.logLevel = logLevelParam !== null ? Number(logLevelParam) : options.logLevel || 0;
+        // URL parameter overrides the option; an omitted option falls back to a persisted level
+        this.logLevel = readUrlLogLevel() ?? options.logLevel ?? readPersistedLogLevel() ?? 0;
         this.logTime = options.logTime || false;
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
@@ -81,9 +121,44 @@ export class Vittra {
     }
 
     /**
+     * Change the log level at runtime, e.g. to escalate tracing when a
+     * suspected bug condition is hit.
+     * @param level The new log level (0 disables logging)
+     * @param options Set persist to true to remember the level in localStorage
+     *                across page loads; persisting 0 clears the remembered level.
+     *
+     * Example:
+     * ```typescript
+     * if (value === suspectedBugValue) {
+     *     log.setLogLevel(3); // this session only
+     * }
+     * log.setLogLevel(2, { persist: true }); // remembered across reloads
+     * log.setLogLevel(0, { persist: true }); // off, and forgotten
+     * ```
+     */
+    setLogLevel(level: number, options: { persist?: boolean } = {}): void {
+        if (!Number.isFinite(level)) {
+            return;
+        }
+        this.logLevel = level;
+        if (options.persist !== true) {
+            return;
+        }
+        try {
+            if (level === 0) {
+                globalThis.localStorage?.removeItem(LOG_LEVEL_KEY);
+            } else {
+                globalThis.localStorage?.setItem(LOG_LEVEL_KEY, String(level));
+            }
+        } catch {
+            // localStorage unavailable — the level still applies in memory
+        }
+    }
+
+    /**
      * Formats a time duration into a human-readable string
      * @param delta Time in milliseconds
-     * @returns Formatted time string (e.g., "1.2 ms", "2.5 s", "01:30.0")
+     * @returns Formatted time string (e.g., "1.2 ms", "2.500 s", "01:30.000")
      */
     private formatTime(delta: number): string {
         // ms
@@ -93,16 +168,48 @@ export class Vittra {
         // seconds
         if (delta < 60000) {
             const seconds = Math.floor(delta / 1000);
-            const millis = delta % 1000;
-            return `${seconds}.${millis.toFixed(0)} s`;
+            const millis = Math.floor(delta % 1000);
+            return `${seconds}.${millis.toString().padStart(3, '0')} s`;
         }
         // minutes:seconds.millis
         const minutes = Math.floor(delta / 60000);
         const seconds = Math.floor((delta % 60000) / 1000);
-        const millis = delta % 1000;
+        const millis = Math.floor(delta % 1000);
         const minutesStr = minutes < 10 ? `0${minutes}` : minutes.toString();
         const secondsStr = seconds < 10 ? `0${seconds}` : seconds.toString();
-        return `${minutesStr}:${secondsStr}.${millis.toFixed(0)}`;
+        return `${minutesStr}:${secondsStr}.${millis.toString().padStart(3, '0')}`;
+    }
+
+    /**
+     * Snapshot a logged value so the console shows it as it was at log time.
+     * Errors are passed through live so message and stack survive. Values
+     * that cannot be cloned fall back to the live reference — a log call
+     * must never throw.
+     */
+    private snapshotValue(value: unknown): unknown {
+        if (value instanceof Error) {
+            return value;
+        }
+        if (typeof globalThis.structuredClone === 'function') {
+            try {
+                return globalThis.structuredClone(value);
+            } catch {
+                // Not structured-cloneable (e.g. contains a function) — try JSON
+            }
+        }
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch {
+            return value;
+        }
+    }
+
+    private snapshot(values: unknown[]): unknown[] {
+        const cloned: unknown[] = [];
+        for (const value of values) {
+            cloned.push(this.snapshotValue(value));
+        }
+        return cloned;
     }
 
     /**
@@ -111,7 +218,7 @@ export class Vittra {
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
         if (this.logLevel === 0) return;
 
-        const objectClone = JSON.parse(JSON.stringify(valuesToLog));
+        const objectClone = this.snapshot(valuesToLog);
         const lastTimer = this.timers[this.timers.length - 1];
         let deltaString = '';
 
@@ -230,7 +337,7 @@ export class Vittra {
                     }
                 }
             }
-            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            const objectClone = this.snapshot(tmpArray);
             console.log(`%c${prefix}⟳ ${func}(`, this.boldStyle, ...objectClone, ')');
         } else {
             console.log(`%c${prefix}⟳ ${func}()`, this.boldStyle);
@@ -307,7 +414,7 @@ export class Vittra {
                     }
                 }
             }
-            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            const objectClone = this.snapshot(tmpArray);
             console.log(`%c${prefix}✓ ${func}()${runTimeString} =`, this.boldStyle, ...objectClone);
         } else {
             console.log(`%c${prefix}✓ ${func}()${runTimeString}`, this.boldStyle);
@@ -357,7 +464,7 @@ export class Vittra {
                     }
                 }
             }
-            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            const objectClone = this.snapshot(tmpArray);
 
             if (objectClone.length === 0) {
                 console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
@@ -387,13 +494,28 @@ export class Vittra {
     tfo(func: string, ...returnValues: unknown[]): void {
         if (this.logLevel === 0) return;
 
-        // Check if this is the expected function
-        const lastFunc = this.functionStack[this.functionStack.length - 1];
-        if (lastFunc !== func) {
-            this.tfw(
-                `Warning: Unexpected tfo call for '${func}'. Expected '${lastFunc || 'no function'}'`,
-            );
+        if (!this.functionStack.includes(func)) {
+            this.tfw(`Warning: tfo called for '${func}' but no matching tfi found`);
             return;
+        }
+
+        // Close functions left open above this one (e.g. early returns without a tfo)
+        // so one missing tfo does not skew the indentation of everything after it
+        if (this.functionStack[this.functionStack.length - 1] !== func) {
+            const orphanedFunctions: string[] = [];
+            while (this.functionStack[this.functionStack.length - 1] !== func) {
+                const orphan = this.functionStack.pop();
+                if (orphan !== undefined) {
+                    orphanedFunctions.push(orphan);
+                }
+                if (this.logTime === true && this.timers.length > 0) {
+                    this.timers.pop();
+                }
+                console.groupEnd();
+            }
+            this.tfw(
+                `Warning: Unexpected tfo call for '${func}'. Auto-closed unclosed functions: ${orphanedFunctions.join(', ')}`,
+            );
         }
 
         // Remove function from stack
@@ -427,7 +549,7 @@ export class Vittra {
                 }
             }
 
-            const objectClone = JSON.parse(JSON.stringify(tmpArray));
+            const objectClone = this.snapshot(tmpArray);
             console.groupEnd();
 
             if (objectClone.length === 0) {
@@ -512,6 +634,21 @@ export class Vittra {
     tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
         if (this.logLevel === 0) return;
         console.table(tabularData, properties);
+    }
+
+    /**
+     * Reset all tracing state: closes any console groups left open by
+     * unmatched tfi calls and clears function, timer, and async-operation
+     * tracking. Use to recover when a trace has gone out of sync.
+     */
+    reset(): void {
+        for (let i = 0; i < this.functionStack.length; i++) {
+            console.groupEnd();
+        }
+        this.functionStack = [];
+        this.timers = [];
+        this.asyncOps.clear();
+        this.currentIndent = 0;
     }
 
     /**

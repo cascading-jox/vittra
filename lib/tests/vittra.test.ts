@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { Vittra, VittraOptions } from '../src/vittra';
 
@@ -158,7 +158,7 @@ describe('Vittra', () => {
 
             expect(consoleGroupEndSpy).toHaveBeenCalled();
             expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c<-- testFunction [1.0 s] =',
+                '%c<-- testFunction [1.000 s] =',
                 'font-weight: bold',
                 { result: 'success' },
             );
@@ -175,7 +175,7 @@ describe('Vittra', () => {
                 ')',
             );
             expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c<-- testFunction [1.0 s]',
+                '%c<-- testFunction [1.000 s]',
                 'font-weight: bold',
             );
         });
@@ -198,17 +198,33 @@ describe('Vittra', () => {
             expect(consoleWarnSpy).not.toHaveBeenCalled();
         });
 
-        it('should warn on mismatched tfo call', () => {
+        it('should warn and auto-close unclosed functions on mismatched tfo call', () => {
             log.tfi('outer');
             log.tfi('inner');
-            log.tfo('outer'); // Wrong order
+            log.tfo('outer'); // inner was never closed
 
             expect(consoleWarnSpy).toHaveBeenCalledWith(
                 '%c+ ',
                 'font-weight: bold',
-                "Warning: Unexpected tfo call for 'outer'. Expected 'inner'",
+                "Warning: Unexpected tfo call for 'outer'. Auto-closed unclosed functions: inner",
                 '',
             );
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(2);
+            expect(log.checkUnclosedFunctions()).toBe(false);
+        });
+
+        it('should warn and leave state untouched on tfo call with no matching tfi', () => {
+            log.tfi('outer');
+            log.tfo('unknown');
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                "Warning: tfo called for 'unknown' but no matching tfi found",
+                '',
+            );
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+            expect(log.checkUnclosedFunctions()).toBe(true);
         });
 
         it('should detect unclosed functions', () => {
@@ -248,7 +264,7 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c✓ asyncOp() [1.0 s] =',
+                '%c✓ asyncOp() [1.000 s] =',
                 'font-weight: bold',
                 { result: 'success' },
             );
@@ -280,14 +296,14 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c  ✓ innerAsync() [1.0 s] =',
+                '%c  ✓ innerAsync() [1.000 s] =',
                 'font-weight: bold',
                 { inner: 'result' },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c✓ outerAsync() [1.0 s] =',
+                '%c✓ outerAsync() [1.000 s] =',
                 'font-weight: bold',
                 { outer: 'result' },
             );
@@ -319,14 +335,14 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 3,
-                '%c✓ asyncOp() [1.0 s] =',
+                '%c✓ asyncOp() [1.000 s] =',
                 'font-weight: bold',
                 { result: 1 },
             );
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 4,
-                '%c  ✓ asyncOp() [1.0 s] =',
+                '%c  ✓ asyncOp() [1.000 s] =',
                 'font-weight: bold',
                 { result: 2 },
             );
@@ -341,7 +357,7 @@ describe('Vittra', () => {
 
             expect(consoleLogSpy).toHaveBeenNthCalledWith(
                 2,
-                '%c✓ asyncOp() [1.0 s]',
+                '%c✓ asyncOp() [1.000 s]',
                 'font-weight: bold',
             );
         });
@@ -388,7 +404,207 @@ describe('Vittra', () => {
             performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(91000);
             log.tfi('test');
             log.tfo('test');
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [01:30.0]', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c<-- test [01:30.000]',
+                'font-weight: bold',
+            );
+        });
+
+        it('should zero-pad milliseconds in the seconds format', () => {
+            performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(3005);
+            log.tfi('test');
+            log.tfo('test');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- test [2.005 s]', 'font-weight: bold');
+        });
+
+        it('should zero-pad milliseconds in the minutes format', () => {
+            performanceNowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(66005);
+            log.tfi('test');
+            log.tfo('test');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c<-- test [01:05.005]',
+                'font-weight: bold',
+            );
+        });
+    });
+
+    describe('value snapshotting', () => {
+        beforeEach(() => {
+            log = new Vittra({ logLevel: 1 });
+        });
+
+        it('should not throw when logging a circular object', () => {
+            const circular: Record<string, unknown> = { name: 'a' };
+            circular.self = circular;
+
+            expect(() => log.tf('state:', circular)).not.toThrow();
+            expect(consoleLogSpy).toHaveBeenCalled();
+        });
+
+        it('should preserve Error message and stack', () => {
+            const error = new Error('boom');
+            log.tfe(error);
+
+            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', error, '');
+        });
+
+        it('should not throw when logging a function value', () => {
+            const fn = () => 42;
+
+            expect(() => log.tf(fn)).not.toThrow();
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', fn, '');
+        });
+
+        it('should not throw when structuredClone is unavailable', () => {
+            vi.stubGlobal('structuredClone', undefined);
+            try {
+                const circular: Record<string, unknown> = { name: 'a' };
+                circular.self = circular;
+
+                expect(() => log.tf(circular)).not.toThrow();
+                expect(consoleLogSpy).toHaveBeenCalledWith(
+                    '%c+ ',
+                    'font-weight: bold',
+                    circular,
+                    '',
+                );
+            } finally {
+                vi.unstubAllGlobals();
+            }
+        });
+    });
+
+    describe('setLogLevel and persistence', () => {
+        // jsdom's localStorage lacks the Storage methods, so stub a real one
+        function createStorageMock(): Storage {
+            const store = new Map<string, string>();
+            return {
+                getItem: (key: string) => store.get(key) ?? null,
+                setItem: (key: string, value: string) => {
+                    store.set(key, String(value));
+                },
+                removeItem: (key: string) => {
+                    store.delete(key);
+                },
+                clear: () => {
+                    store.clear();
+                },
+                key: (index: number) => Array.from(store.keys())[index] ?? null,
+                get length() {
+                    return store.size;
+                },
+            };
+        }
+
+        beforeEach(() => {
+            vi.stubGlobal('localStorage', createStorageMock());
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+        });
+
+        it('should change the log level at runtime', () => {
+            log = new Vittra();
+            log.tf('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+
+            log.setLogLevel(1);
+            log.tf('visible');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'visible', '');
+
+            log.setLogLevel(0);
+            consoleLogSpy.mockClear();
+            log.tf('hidden again');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
+        it('should not persist by default', () => {
+            log = new Vittra();
+            log.setLogLevel(2);
+            expect(localStorage.getItem('vittraLogLevel')).toBeNull();
+        });
+
+        it('should persist with persist: true and apply to a new instance without an explicit level', () => {
+            log = new Vittra();
+            log.setLogLevel(2, { persist: true });
+            expect(localStorage.getItem('vittraLogLevel')).toBe('2');
+
+            const nextLoad = new Vittra();
+            nextLoad.tf('remembered');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'remembered',
+                '',
+            );
+        });
+
+        it('should clear the persisted level when persisting 0', () => {
+            log = new Vittra();
+            log.setLogLevel(2, { persist: true });
+            log.setLogLevel(0, { persist: true });
+            expect(localStorage.getItem('vittraLogLevel')).toBeNull();
+        });
+
+        it('should let an explicit constructor level beat the persisted one', () => {
+            log = new Vittra();
+            log.setLogLevel(2, { persist: true });
+
+            const explicitOff = new Vittra({ logLevel: 0 });
+            explicitOff.tf('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
+        it('should leave the persisted level untouched on a non-persisting set', () => {
+            log = new Vittra();
+            log.setLogLevel(2, { persist: true });
+            log.setLogLevel(3);
+            expect(localStorage.getItem('vittraLogLevel')).toBe('2');
+        });
+    });
+
+    describe('URL parameter', () => {
+        afterEach(() => {
+            window.history.replaceState(null, '', '/');
+        });
+
+        it('should let the URL parameter override an explicit constructor level', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=2');
+            log = new Vittra({ logLevel: 0 });
+            log.tf('from url');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'from url', '');
+        });
+
+        it('should ignore a non-numeric URL parameter', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=abc');
+            log = new Vittra();
+            log.tf('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('reset', () => {
+        beforeEach(() => {
+            log = new Vittra({ logLevel: 1 });
+        });
+
+        it('should close open groups and clear all tracing state', () => {
+            log.tfi('outer');
+            log.tfi('inner');
+
+            log.reset();
+
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(2);
+            expect(log.checkUnclosedFunctions()).toBe(false);
+        });
+
+        it('should reset async indentation', () => {
+            log.tfia('first');
+            log.reset();
+
+            log.tfia('second');
+            expect(consoleLogSpy).toHaveBeenLastCalledWith('%c⟳ second()', 'font-weight: bold');
         });
     });
 });
