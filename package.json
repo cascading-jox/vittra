@@ -8,6 +8,7 @@
     "types": "dist/vittra.d.ts",
     "exports": {
         ".": {
+            "types": "./dist/vittra.d.ts",
             "import": "./dist/vittra.js"
         }
     },
@@ -15,9 +16,6 @@
         "dist"
     ],
     "sideEffects": false,
-    "engines": {
-        "node": ">=16.0.0"
-    },
     "scripts": {
         "prepare": "husky",
         "dev": "vite demo",
