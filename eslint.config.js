@@ -20,6 +20,9 @@ export default [
         clearTimeout: 'readonly',
         performance: 'readonly',
         __dirname: 'readonly',
+        window: 'readonly',
+        localStorage: 'readonly',
+        Storage: 'readonly',
       },
     },
     plugins: {
@@ -32,6 +35,13 @@ export default [
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'no-undef': 'error',
+    },
+  },
+  {
+    // Declaration files never "use" their parameters; the core rule is not TS-aware
+    files: ['**/*.d.ts'],
+    rules: {
+      'no-unused-vars': 'off',
     },
   },
   {
