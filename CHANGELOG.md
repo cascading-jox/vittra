@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1](https://github.com/cascading-jox/vittra/compare/v0.7.0...v0.7.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* clear evicted op perf marks, stray exit-line spaces, and add dump durations ([9a82a59](https://github.com/cascading-jox/vittra/commit/9a82a5922b4f64fa2a4b0368ddb83020fa3f546d))
+* complete tfoa bookkeeping when the level dropped mid-operation ([6eeebb7](https://github.com/cascading-jox/vittra/commit/6eeebb7ed290e8db606c3616fb76b9bb0b4de0ec))
+* print scoped tfw/tfe below level 2 like their instance-level counterparts ([f1e6185](https://github.com/cascading-jox/vittra/commit/f1e6185fc8de29e91e888226ab83f38a38546f8b))
+
+
+### Documentation
+
+* document buffer-time printed flags for buffered tfa entries ([c19759c](https://github.com/cascading-jox/vittra/commit/c19759cfadc1876445371220b2a413a5105ebe3a))
+
+
+### Miscellaneous Chores
+
+* remove unused type declaration ([c51b10a](https://github.com/cascading-jox/vittra/commit/c51b10ac3f7965b1bf6e0388f4936c04d93abf77))
+
 ## [0.7.0](https://github.com/cascading-jox/vittra/compare/v0.6.0...v0.7.0) (2026-07-12)
 
 
