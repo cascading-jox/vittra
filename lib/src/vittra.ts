@@ -1347,25 +1347,35 @@ export class Vittra {
      */
     tfoa(func: string, opId: number, ...returnValues: unknown[]): void {
         const print = this.logLevel >= 2;
-        if (!print && !this.blackBox) return;
-
         const op = this.asyncOps.get(opId);
         if (!op || op.func !== func) {
+            // A pair that ran untracked (tfia below level 2 without blackBox)
+            // legitimately has no registered op — warning would flag correct code
+            if (!print && !this.blackBox) return;
             this.tfw(`Warning: tfoa called for '${func}' (ID: ${opId}) but no matching tfia found`);
             return;
         }
 
+        // The op was registered, so the bookkeeping always completes — even when
+        // the level has since dropped — or it would linger pending forever and
+        // checkUnclosedAsyncOps would flag a tfoa that DID arrive. Only the
+        // printed line and its capture follow the current gates; the perf span
+        // still closes so a profile keeps the op's true duration.
         const duration = performance.now() - op.start;
-        this.emit(
-            {
-                kind: 'asyncEnd',
-                func,
-                opId,
-                values: this.snapshot(returnValues),
-                duration: this.logTime ? duration : undefined,
-            },
-            { print },
-        );
+        if (print || this.blackBox) {
+            this.emit(
+                {
+                    kind: 'asyncEnd',
+                    func,
+                    opId,
+                    values: this.snapshot(returnValues),
+                    duration: this.logTime ? duration : undefined,
+                },
+                { print },
+            );
+        } else if (this.perfMarks) {
+            this.measureOp(func, opId, { opId });
+        }
 
         this.recordCompleted(op, 'done', duration);
         this.asyncOps.delete(opId);

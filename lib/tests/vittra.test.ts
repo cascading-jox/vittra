@@ -373,6 +373,54 @@ describe('Vittra', () => {
         });
     });
 
+    describe('tfoa across level changes', () => {
+        it('should complete the bookkeeping when tfoa arrives after the level dropped', () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+            const opId = log.tfia('fetch');
+            log.setLogLevel(0);
+            log.tfoa('fetch', opId);
+
+            log.setLogLevel(2);
+            consoleWarnSpy.mockClear();
+            expect(log.checkUnclosedAsyncOps()).toBe(false);
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+        });
+
+        it('should print and capture nothing for the silent completion without blackBox', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            const opId = log.tfia('fetch');
+            log.setLogLevel(0);
+            consoleLogSpy.mockClear();
+            log.tfoa('fetch', opId, 'result');
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            // The ⟳ start was captured at level 2; the silent completion is not
+            expect(log.dump()).not.toContain('✓');
+        });
+
+        it('should list the silently completed op in tfat once the level returns', () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
+            const opId = log.tfia('fetch');
+            log.setLogLevel(0);
+            log.tfoa('fetch', opId);
+
+            log.setLogLevel(2);
+            log.tfat();
+            expect(consoleTableSpy).toHaveBeenCalledWith([
+                expect.objectContaining({ id: opId, name: 'fetch', status: 'done' }),
+            ]);
+        });
+
+        it('should stay silent for an untracked pair completed below level 2', () => {
+            log = new Vittra({ banner: false, logLevel: 0 });
+            const opId = log.tfia('quiet');
+            log.tfoa('quiet', opId);
+
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+    });
+
     describe('shared async id counter', () => {
         it('should number ops sequentially across separate instances', () => {
             const api = new Vittra({ name: 'api', banner: false, logLevel: 2 });
