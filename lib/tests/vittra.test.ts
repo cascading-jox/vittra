@@ -530,6 +530,21 @@ describe('Vittra', () => {
             expect(localStorage.getItem('vittraLogLevel')).toBeNull();
         });
 
+        it('should keep a persisted wildcard when an unnamed instance persists 0, yet resolve 0 next load', () => {
+            localStorage.setItem('vittraLogLevel', '*:1');
+            const first = new Vittra({ banner: false });
+            first.setLogLevel(0, { persist: true });
+
+            // The wildcard survives so other namespaces stay enabled...
+            expect(localStorage.getItem('vittraLogLevel')).toContain('*:1');
+
+            // ...but the explicit global 0 beats it, so the next unnamed load is off
+            consoleLogSpy.mockClear();
+            const next = new Vittra({ banner: false });
+            next.tf('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
         it('should let an explicit constructor level beat the persisted one', () => {
             log = new Vittra();
             log.setLogLevel(2, { persist: true });
@@ -1248,6 +1263,29 @@ describe('Vittra', () => {
             expect(names.filter((n) => n === 'vittra: child #2')).toHaveLength(1);
         });
 
+        it('should measure a nested child at its own completion, before the parent replays', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
+            await log.tfa('parent', async (t) => {
+                await t.tfa('child', async () => {});
+            });
+
+            // The child's measure must fire when the child settles (its true
+            // duration), not when the parent replays it into the console group.
+            const childMeasureIndex = measureSpy.mock.calls.findIndex(
+                ([name]) => name === 'vittra: child #2',
+            );
+            expect(childMeasureIndex).toBeGreaterThanOrEqual(0);
+            const childMeasureOrder = measureSpy.mock.invocationCallOrder[childMeasureIndex];
+
+            const parentGroupIndex = consoleGroupSpy.mock.calls.findIndex(
+                ([header]) => typeof header === 'string' && header.includes('✓ parent #1'),
+            );
+            expect(parentGroupIndex).toBeGreaterThanOrEqual(0);
+            const parentGroupOrder = consoleGroupSpy.mock.invocationCallOrder[parentGroupIndex];
+
+            expect(childMeasureOrder).toBeLessThan(parentGroupOrder);
+        });
+
         it('should clear auto-closed frame marks without measuring them', () => {
             log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
             log.tfi('outer');
@@ -1310,6 +1348,12 @@ describe('Vittra', () => {
     });
 
     describe('namespaces: static setLogLevel', () => {
+        // Each test sets the module-level runtime spec; neutralize it afterward
+        // so it does not silently drive instances constructed by later describes.
+        afterEach(() => {
+            Vittra.setLogLevel(0);
+        });
+
         it('should apply per-namespace levels to registered instances', () => {
             const api = new Vittra({ name: 'api', banner: false });
             const ui = new Vittra({ name: 'ui', banner: false });
@@ -1391,7 +1435,7 @@ describe('Vittra', () => {
             expect(stored).toContain('api:2');
         });
 
-        it('should remove only its own slot when a named instance persists 0', () => {
+        it('should write an explicit 0 for a named instance persisting 0 so a wildcard cannot re-enable it', () => {
             localStorage.setItem('vittraLogLevel', 'ui:1,api:2');
             const api = new Vittra({ name: 'api', banner: false });
 
@@ -1399,7 +1443,18 @@ describe('Vittra', () => {
 
             const stored = localStorage.getItem('vittraLogLevel');
             expect(stored).toContain('ui:1');
-            expect(stored).not.toContain('api');
+            expect(stored).toContain('api:0');
+        });
+
+        it('should keep a wildcard but write an explicit named 0 that beats it', () => {
+            localStorage.setItem('vittraLogLevel', '*:1');
+            const api = new Vittra({ name: 'api', banner: false });
+
+            api.setLogLevel(0, { persist: true });
+
+            const stored = localStorage.getItem('vittraLogLevel');
+            expect(stored).toContain('*:1');
+            expect(stored).toContain('api:0');
         });
     });
 
@@ -1472,6 +1527,212 @@ describe('Vittra', () => {
             api.tfw('hidden');
             expect(consoleLogSpy).not.toHaveBeenCalled();
             expect(consoleWarnSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('group pairing across level changes', () => {
+        it('reset closes groups that printed, even after the level dropped to 0', () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+            log.tfi('a');
+            log.tfi('b'); // two real, printed groups
+
+            log.setLogLevel(0);
+            consoleGroupEndSpy.mockClear();
+            log.reset();
+
+            // Both printed groups must close or the console stays indented forever
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('reset closes nothing for black-boxed groups that never printed, even after escalation', () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true });
+            log.tfi('a');
+            log.tfi('b');
+            log.tfi('c'); // captured silently — no console.group was ever called
+
+            log.setLogLevel(2);
+            consoleGroupEndSpy.mockClear();
+            log.reset();
+
+            // Emitting groupEnds here would close the host app's own open groups
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+        });
+
+        it('a plain tfo after escalation does not close a group that never opened', () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true });
+            log.tfi('a'); // silent entry, no group printed
+
+            log.setLogLevel(2);
+            consoleGroupEndSpy.mockClear();
+            log.tfo('a');
+
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+            // The exit line still follows the current level's print gate
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- a ', 'font-weight: bold');
+        });
+
+        it('a matched tfo closes a printed group even after the level dropped to 0', () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+            log.tfi('a'); // real, printed group
+
+            log.setLogLevel(0);
+            consoleGroupEndSpy.mockClear();
+            log.tfo('a');
+
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('closes exactly the frames whose groups printed when printed and silent frames are mixed', () => {
+            log = new Vittra({ banner: false, logLevel: 2, blackBox: true });
+            log.tfi('printed'); // level 2 → group printed
+            log.setLogLevel(0);
+            log.tfi('silent'); // black-boxed → no group printed
+            log.setLogLevel(2);
+
+            consoleGroupEndSpy.mockClear();
+            log.reset();
+
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('dump crash-proofness', () => {
+        // Object.create(null) with a function member and a self-cycle defeats
+        // structuredClone AND JSON AND String — the worst case for any dump path.
+        function makePoison(): Record<string, unknown> {
+            const poison = Object.create(null) as Record<string, unknown>;
+            poison.fn = () => 42;
+            poison.cycle = poison;
+            return poison;
+        }
+
+        it('text dump renders an unstringifiable value as a placeholder without throwing', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            log.tf(makePoison());
+
+            let text = '';
+            expect(() => {
+                text = log.dump();
+            }).not.toThrow();
+            expect(text).toContain('[unstringifiable]');
+        });
+
+        it('json dump parses with a placeholder instead of collapsing or throwing', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            log.tf(makePoison());
+
+            let json = '';
+            expect(() => {
+                json = log.dump({ format: 'json' });
+            }).not.toThrow();
+            const parsed = JSON.parse(json) as unknown[];
+            expect(Array.isArray(parsed)).toBe(true);
+            // The genuine self-cycle becomes the circular placeholder
+            expect(json).toContain('[Circular]');
+        });
+
+        it('the dumpOnError flight recorder prints the dump without throwing at crash time', () => {
+            let errorHandler: (() => void) | undefined;
+            const spy = vi
+                .spyOn(globalThis, 'addEventListener')
+                .mockImplementation((type: string, handler: unknown) => {
+                    if (type === 'error') errorHandler = handler as () => void;
+                });
+            try {
+                log = new Vittra({
+                    banner: false,
+                    logLevel: 2,
+                    bufferSize: 10,
+                    dumpOnError: true,
+                });
+                log.tf(makePoison());
+
+                consoleLogSpy.mockClear();
+                expect(errorHandler).toBeTypeOf('function');
+                expect(() => errorHandler?.()).not.toThrow();
+                expect(
+                    consoleLogSpy.mock.calls.some((call) =>
+                        String(call[0]).includes('[unstringifiable]'),
+                    ),
+                ).toBe(true);
+            } finally {
+                spy.mockRestore();
+            }
+        });
+
+        it('json dump serializes a shared sibling twice and only a real cycle as circular', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            const shared = { tag: 'shared-value' };
+            log.tf({ x: shared, y: shared }); // shared is a sibling, not an ancestor
+
+            const cycle: Record<string, unknown> = { name: 'root' };
+            cycle.self = cycle;
+            log.tf(cycle);
+
+            const json = log.dump({ format: 'json' });
+            // A repeated sibling is serialized in full each time
+            const occurrences = json.split('shared-value').length - 1;
+            expect(occurrences).toBe(2);
+            // A genuine ancestor cycle gets the placeholder
+            expect(json).toContain('[Circular]');
+        });
+    });
+
+    describe('tft data snapshot', () => {
+        it('snapshots table data for the ring while console.table keeps the live object', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            const data = { count: 1 };
+            log.tft(data);
+
+            // console.table received the LIVE reference (stays devtools-expandable)
+            expect(consoleTableSpy.mock.calls[0][0]).toBe(data);
+
+            data.count = 999;
+            const dump = log.dump();
+            // The ring copy was snapshotted at log time, so the mutation is invisible
+            expect(dump).toContain('"count":1');
+            expect(dump).not.toContain('999');
+        });
+    });
+
+    describe('constructor: runtime spec binds later instances', () => {
+        function createStorageMock(): Storage {
+            const store = new Map<string, string>();
+            return {
+                getItem: (key: string) => store.get(key) ?? null,
+                setItem: (key: string, value: string) => {
+                    store.set(key, String(value));
+                },
+                removeItem: (key: string) => {
+                    store.delete(key);
+                },
+                clear: () => {
+                    store.clear();
+                },
+                key: (index: number) => Array.from(store.keys())[index] ?? null,
+                get length() {
+                    return store.size;
+                },
+            };
+        }
+
+        beforeEach(() => {
+            vi.stubGlobal('localStorage', createStorageMock());
+        });
+
+        afterEach(() => {
+            // Neutralize the runtime spec this test set, then drop the stub
+            Vittra.setLogLevel(0);
+            vi.unstubAllGlobals();
+        });
+
+        it('binds an instance the runtime spec omits to 0, not to the persisted level', () => {
+            localStorage.setItem('vittraLogLevel', '2'); // persisted global 2
+            Vittra.setLogLevel('api:2'); // runtime spec names only api
+
+            const unnamed = new Vittra({ banner: false }); // unmentioned → 0
+            unnamed.tf('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
         });
     });
 });

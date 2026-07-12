@@ -53,6 +53,10 @@ export interface VittraOptions {
      * captures). Never fires again when a tfa buffer is replayed. A throwing
      * hook is swallowed silently and never breaks logging or the app.
      *
+     * Treat the received entry as immutable: it is the same object the ring
+     * buffer stores and that may still be about to print, so mutating it alters
+     * both the console output and later dump() contents.
+     *
      * Sentry breadcrumb recipe:
      * ```typescript
      * onEntry: (e) => Sentry.addBreadcrumb({
@@ -195,8 +199,11 @@ export declare class Vittra {
      * Change this instance's log level at runtime
      * @param level The new log level (0 disables logging)
      * @param options Set persist to true to remember the level in localStorage
-     *                across page loads; the persisted spec is merged, so this
-     *                instance's slot is set without wiping other namespaces
+     *                across page loads. The persisted spec is merged, so this
+     *                instance's slot is written without wiping other namespaces.
+     *                Persisting 0 writes an explicit 0 (so a wildcard or global
+     *                default can't re-enable this instance next load); the key is
+     *                cleared only when nothing but a bare 0 remains.
      */
     setLogLevel(level: number, options?: { persist?: boolean }): void;
 

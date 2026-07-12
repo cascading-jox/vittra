@@ -53,6 +53,10 @@ export interface VittraOptions {
      * captures). Never fires again when a tfa buffer is replayed. A throwing
      * hook is swallowed silently and never breaks logging or the app.
      *
+     * Treat the received entry as immutable: it is the same object the ring
+     * buffer stores and that may still be about to print, so mutating it alters
+     * both the console output and later dump() contents.
+     *
      * Sentry breadcrumb recipe:
      * ```typescript
      * onEntry: (e) => Sentry.addBreadcrumb({
@@ -201,6 +205,18 @@ interface CompletedOp {
     parent: number | null;
     status: 'done' | 'failed';
     duration: number;
+}
+
+/**
+ * One open function frame on the trace stack. printedGroup records whether THIS
+ * frame's console.group actually printed at entry — so tfo and reset can close
+ * exactly the groups that opened, independent of the level in force when they
+ * run. markName is the frame's unique User Timing start mark (perfMarks only).
+ */
+interface FunctionFrame {
+    func: string;
+    printedGroup: boolean;
+    markName?: string;
 }
 
 /** Per-operation colors so entry and completion lines pair visually */
@@ -457,7 +473,7 @@ export class Vittra {
     private logWithType: boolean;
     private boldStyle: string;
     private timers: number[];
-    private functionStack: string[] = []; // Track function entries
+    private functionStack: FunctionFrame[] = []; // Track function entries
     private asyncOps: Map<number, AsyncOp> = new Map();
     private completedOps: CompletedOp[] = [];
     private nextAsyncId: number = 1;
@@ -477,8 +493,6 @@ export class Vittra {
     private bufferCount: number = 0;
     /** Emit User Timing marks/measures from emit() so traces show in the profiler */
     private perfMarks: boolean;
-    /** Parallel to functionStack: the unique start-mark name of each open frame */
-    private markNameStack: string[] = [];
     /** Monotonic source of unique function span mark names (perfMarks only) */
     private perfMarkCounter: number = 0;
     /** Namespace label; addressable in level specs and shown as a badge */
@@ -504,8 +518,12 @@ export class Vittra {
         const urlSpec = readUrlLevelSpec();
         const persistedSpec = readPersistedLevelSpec();
         const urlLevel = urlSpec !== null ? resolveLevel(urlSpec, this.name) : undefined;
+        // A runtime spec (Vittra.setLogLevel this session) is the whole
+        // configuration once set: an instance it does not mention resolves to 0
+        // and never falls through to the persisted spec — including instances
+        // constructed after the spec was set.
         const runtimeLevel =
-            runtimeSpec !== null ? resolveLevel(runtimeSpec, this.name) : undefined;
+            runtimeSpec !== null ? (resolveLevel(runtimeSpec, this.name) ?? 0) : undefined;
         const persistedLevel =
             persistedSpec !== null ? resolveLevel(persistedSpec, this.name) : undefined;
 
@@ -568,7 +586,13 @@ export class Vittra {
      * suspected bug condition is hit.
      * @param level The new log level (0 disables logging)
      * @param options Set persist to true to remember the level in localStorage
-     *                across page loads; persisting 0 clears the remembered level.
+     *                across page loads. Persisting merges into the shared spec:
+     *                this instance's slot is written (a named instance as
+     *                `name:level`, an unnamed one as the global level) without
+     *                touching other namespaces. Persisting 0 writes an explicit
+     *                0 so a `*` wildcard or global default can't re-enable this
+     *                instance next load; the stored key is cleared only when
+     *                nothing but that bare 0 remains.
      *
      * Example:
      * ```typescript
@@ -576,7 +600,7 @@ export class Vittra {
      *     log.setLogLevel(3); // this session only
      * }
      * log.setLogLevel(2, { persist: true }); // remembered across reloads
-     * log.setLogLevel(0, { persist: true }); // off, and forgotten
+     * log.setLogLevel(0, { persist: true }); // off; key cleared if nothing else persisted
      * ```
      */
     setLogLevel(level: number, options: { persist?: boolean } = {}): void {
@@ -594,8 +618,10 @@ export class Vittra {
      * Persist just this instance's slot into the shared spec, leaving every
      * other namespace's persisted level untouched. Merges into the stored spec
      * rather than overwriting it, so one instance never wipes another's level.
-     * An unnamed instance owns the global slot; persisting 0 removes its slot,
-     * and an empty resulting spec clears the key.
+     * A named instance owns its `name` slot, an unnamed instance the global
+     * slot. Level 0 is written explicitly (not removed) so a wildcard or global
+     * default can't re-enable this instance next load; the key is cleared only
+     * when the whole spec reduces to a bare global 0.
      */
     private persistOwnLevel(level: number): void {
         try {
@@ -604,18 +630,15 @@ export class Vittra {
                 byName: new Map<string, number>(),
             };
             if (this.name !== undefined) {
-                if (level === 0) {
-                    spec.byName.delete(this.name);
-                } else {
-                    spec.byName.set(this.name, level);
-                }
-            } else if (level === 0) {
-                spec.global = undefined;
+                spec.byName.set(this.name, level);
             } else {
                 spec.global = level;
             }
             const serialized = serializeLevelSpec(spec);
-            if (serialized === '') {
+            // A bare global 0 means "off and nothing else remembered" — forget it
+            // entirely; any other spec (an explicit name:0, or 0 alongside a
+            // wildcard) is stored so the explicit 0 survives to beat that default.
+            if (serialized === '' || serialized === '0') {
                 globalThis.localStorage?.removeItem(LOG_LEVEL_KEY);
             } else {
                 globalThis.localStorage?.setItem(LOG_LEVEL_KEY, serialized);
@@ -741,6 +764,17 @@ export class Vittra {
     }
 
     /**
+     * Snapshot table data for the ring/hook. A clone of a Record or Array keeps
+     * that shape; the fallback returns the live reference (also the right type),
+     * so the cast is safe and lets console.table keep receiving the live object.
+     */
+    private snapshotTableData(
+        data: Record<string, unknown> | Array<unknown>,
+    ): Record<string, unknown> | Array<unknown> {
+        return this.snapshotValue(data) as Record<string, unknown> | Array<unknown>;
+    }
+
+    /**
      * Translate a live tf/tfc/tfw/tfe call into an emitted log entry.
      */
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
@@ -818,15 +852,12 @@ export class Vittra {
                 this.markOpStart(entry.opId);
                 break;
             case 'asyncEnd':
+                // Manual tfoa measures at exit — op.duration is known here.
                 this.measureOp(entry.func, entry.opId, { opId: entry.opId });
                 break;
-            case 'asyncComplete':
-                this.measureOp(entry.func, entry.opId, {
-                    opId: entry.opId,
-                    status: entry.status,
-                    parent: entry.badgeParent,
-                });
-                break;
+            // asyncComplete carries no measure: managed ops measure in completeOp,
+            // at completion time, so a nested child records its own duration
+            // rather than the (later) parent-replay time this entry is emitted at.
             // log, table, groupEnd, asyncPending, opError carry no span
         }
     }
@@ -925,6 +956,10 @@ export class Vittra {
      * The one egress for trace content: the sole method that touches console.*
      * and the group-indentation stack. It owns all presentation — prefixes, op
      * colors, comma interspersing, %o type specifiers, and time suffixes.
+     *
+     * Two paths deliberately bypass this egress and call console directly: the
+     * startup banner (printBanner) and the operation table (tfat). The crash
+     * dump (printErrorDump) is a third, documented at its own definition.
      */
     private printEntry(entry: LogEntry): void {
         // Named instances prepend a %c[name] badge to every line; unnamed
@@ -981,7 +1016,8 @@ export class Vittra {
                 );
                 break;
             case 'funcExit': {
-                console.groupEnd();
+                // The group close is emitted separately (as a groupEnd) so it can
+                // follow the frame's own printedGroup, independent of this line.
                 const runtime =
                     entry.duration !== undefined ? `[${this.formatTime(entry.duration)}]` : '';
                 if (entry.values.length > 0) {
@@ -1308,6 +1344,17 @@ export class Vittra {
         op.duration = performance.now() - op.start;
         this.recordCompleted(op, status, op.duration);
 
+        // Measure the op span now, when its real duration is known — not at
+        // replay/emit time, which for a child settled inside a still-pending
+        // parent is the parent's later replay (recording the parent's duration).
+        if (this.perfMarks) {
+            this.measureOp(op.func, op.id, {
+                opId: op.id,
+                status,
+                parent: op.parent ?? undefined,
+            });
+        }
+
         const parent = op.parent !== null ? this.asyncOps.get(op.parent) : undefined;
         if (parent && parent.status === 'pending') {
             return; // replayed inline when the parent completes
@@ -1380,9 +1427,15 @@ export class Vittra {
             tft: (data: Record<string, unknown> | Array<unknown>, properties?: string[]) => {
                 if (this.logLevel < 2) return;
                 if (op.status === 'pending') {
+                    // Buffer keeps the LIVE object for the replay console.table;
+                    // the ring copy is snapshotted so a later mutation of the
+                    // object can't rewrite what dump()/onEntry report.
                     op.buffer.push({ kind: 'table', data, properties });
                     // Chronological truth: capture at buffer time, not at replay
-                    this.capture({ kind: 'table', data, properties }, true);
+                    this.capture(
+                        { kind: 'table', data: this.snapshotTableData(data), properties },
+                        true,
+                    );
                 } else {
                     this.tft(data, properties);
                 }
@@ -1493,19 +1546,19 @@ export class Vittra {
         const print = this.logLevel >= 2;
         if (!print && !this.blackBox) return;
 
-        // Track the stack even while black-boxing so tfo still pairs correctly
-        this.functionStack.push(func);
-
-        if (this.logTime === true) {
-            this.timers.push(performance.now());
-        }
-
-        // A per-call unique mark name keeps recursive/same-name frames distinct;
-        // the parallel stack lets tfo reclaim this frame's name in lockstep
+        // A per-call unique mark name keeps recursive/same-name frames distinct.
         let markName: string | undefined;
         if (this.perfMarks) {
             markName = `vittra-fn-${++this.perfMarkCounter}`;
-            this.markNameStack.push(markName);
+        }
+
+        // Track the frame even while black-boxing so tfo still pairs correctly.
+        // printedGroup records whether this frame's console.group actually
+        // printed, so tfo/reset can close exactly the groups that opened.
+        this.functionStack.push({ func, printedGroup: print, markName });
+
+        if (this.logTime === true) {
+            this.timers.push(performance.now());
         }
 
         this.emit(
@@ -1531,48 +1584,55 @@ export class Vittra {
      */
     tfo(func: string, ...returnValues: unknown[]): void {
         const print = this.logLevel >= 2;
-        if (!print && !this.blackBox) return;
+        // Fast disabled path: nothing to print or capture AND no frames to close.
+        // A non-empty stack (frames opened before the level dropped) still needs
+        // its groups closed, so only bail when the stack is also empty.
+        if (!print && !this.blackBox && this.functionStack.length === 0) return;
 
-        if (!this.functionStack.includes(func)) {
+        if (!this.functionStack.some((frame) => frame.func === func)) {
             this.tfw(`Warning: tfo called for '${func}' but no matching tfi found`);
             return;
         }
 
         // Close functions left open above this one (e.g. early returns without a tfo)
         // so one missing tfo does not skew the indentation of everything after it
-        if (this.functionStack[this.functionStack.length - 1] !== func) {
+        if (this.functionStack[this.functionStack.length - 1].func !== func) {
             const orphanedFunctions: string[] = [];
-            while (this.functionStack[this.functionStack.length - 1] !== func) {
+            while (this.functionStack[this.functionStack.length - 1].func !== func) {
                 const orphan = this.functionStack.pop();
-                if (orphan !== undefined) {
-                    orphanedFunctions.push(orphan);
+                if (orphan === undefined) {
+                    break;
                 }
+                orphanedFunctions.push(orphan.func);
                 if (this.logTime === true && this.timers.length > 0) {
                     this.timers.pop();
                 }
                 // Auto-closed frames get no measure — discard their start mark
-                if (this.perfMarks && this.markNameStack.length > 0) {
-                    const orphanMark = this.markNameStack.pop();
-                    if (orphanMark !== undefined) {
-                        try {
-                            performance.clearMarks(orphanMark);
-                        } catch {
-                            // Perf integration is best-effort
-                        }
+                if (this.perfMarks && orphan.markName !== undefined) {
+                    try {
+                        performance.clearMarks(orphan.markName);
+                    } catch {
+                        // Perf integration is best-effort
                     }
                 }
-                // Auto-close is presentation-only: print the group close, never capture
-                this.emit({ kind: 'groupEnd' }, { print, capture: false });
+                // Close the orphan's group only if it actually opened one, and
+                // never capture — auto-close is presentation-only
+                this.emit({ kind: 'groupEnd' }, { print: orphan.printedGroup, capture: false });
             }
             this.tfw(
                 `Warning: Unexpected tfo call for '${func}'. Auto-closed unclosed functions: ${orphanedFunctions.join(', ')}`,
             );
         }
 
-        // Remove function from stack
-        this.functionStack.pop();
-        // Reclaim this frame's start mark (in lockstep with functionStack)
-        const markName = this.perfMarks ? this.markNameStack.pop() : undefined;
+        const frame = this.functionStack.pop();
+        // some() above guarantees a matching frame; this guard satisfies the type
+        if (frame === undefined) return;
+
+        // Close this frame's group iff it actually opened one: a printed group
+        // must close even at level 0 (else it leaks and the console stays
+        // indented), and a black-boxed frame that never opened one must not emit
+        // a stray groupEnd after an escalation (it could close the host's group).
+        this.emit({ kind: 'groupEnd' }, { print: frame.printedGroup, capture: false });
 
         let duration: number | undefined;
         if (this.logTime === true && this.timers.length > 0) {
@@ -1582,9 +1642,17 @@ export class Vittra {
             }
         }
 
+        // The exit LINE follows the current level (and black-box) gate — unlike
+        // the group close above, which follows the frame's own printedGroup.
         this.emit(
-            { kind: 'funcExit', func, values: this.snapshot(returnValues), duration, markName },
-            { print },
+            {
+                kind: 'funcExit',
+                func,
+                values: this.snapshot(returnValues),
+                duration,
+                markName: frame.markName,
+            },
+            { print, capture: print || this.blackBox },
         );
     }
 
@@ -1659,7 +1727,20 @@ export class Vittra {
     tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
         const print = this.logLevel >= 2;
         if (!print && !this.blackBox) return;
-        this.emit({ kind: 'table', data: tabularData, properties }, { print });
+        // console.table keeps the LIVE object so it stays expandable in devtools;
+        // the ring/hook copy is snapshotted so a later mutation of the object
+        // can't rewrite what dump() and onEntry report. Tables carry no perf
+        // span, so bypassing emit() here (like the buffered-tft path in
+        // createOpLogger) loses nothing.
+        if (this.bufferSize > 0 || this.onEntry !== undefined) {
+            this.capture(
+                { kind: 'table', data: this.snapshotTableData(tabularData), properties },
+                print,
+            );
+        }
+        if (print) {
+            this.printEntry({ kind: 'table', data: tabularData, properties });
+        }
     }
 
     /**
@@ -1669,19 +1750,22 @@ export class Vittra {
      * gone out of sync.
      */
     reset(): void {
-        // Only real, printed groups need closing — black-boxed groups never opened
-        const closeGroups = this.logLevel >= 2;
-        for (let i = 0; i < this.functionStack.length; i++) {
-            this.emit({ kind: 'groupEnd' }, { print: closeGroups, capture: false });
+        // Close exactly the groups that actually opened: a frame whose group
+        // never printed (black-boxed, or opened below level 2) must not emit a
+        // spurious groupEnd that could close one of the host app's own groups.
+        for (const frame of this.functionStack) {
+            this.emit({ kind: 'groupEnd' }, { print: frame.printedGroup, capture: false });
         }
         // Drop the start marks of every frame and op left open, so a reset does
         // not leak stranded marks into the User Timing buffer
         if (this.perfMarks) {
-            for (const markName of this.markNameStack) {
-                try {
-                    performance.clearMarks(markName);
-                } catch {
-                    // Perf integration is best-effort
+            for (const frame of this.functionStack) {
+                if (frame.markName !== undefined) {
+                    try {
+                        performance.clearMarks(frame.markName);
+                    } catch {
+                        // Perf integration is best-effort
+                    }
                 }
             }
             for (const opId of this.asyncOps.keys()) {
@@ -1693,7 +1777,6 @@ export class Vittra {
             }
         }
         this.functionStack = [];
-        this.markNameStack = [];
         this.timers = [];
         this.asyncOps.clear();
         this.completedOps = [];
@@ -1744,7 +1827,10 @@ export class Vittra {
                 const tag =
                     entry.level === 'warn' ? ' WARN' : entry.level === 'error' ? ' ERROR' : '';
                 const values = entry.values.map((value) => this.stringifyValue(value)).join(' ');
-                return `${time} +${tag} ${values}`;
+                // Clean logs print bare in the console, so mirror that here (no
+                // '+'); every other level carries the '+' marker.
+                const marker = entry.level === 'clean' ? '' : `+${tag} `;
+                return `${time} ${marker}${values}`;
             }
             case 'table':
                 return `${time} table ${this.stringifyValue(entry.data)}`;
@@ -1791,7 +1877,9 @@ export class Vittra {
     /**
      * JSON.stringify a single value for the text dump. Errors collapse to
      * "Error: <message>"; anything JSON refuses (functions, symbols, circular
-     * refs) falls back to String(value). A dump must never throw.
+     * refs) falls back to String(value), and anything String() also refuses (a
+     * null-prototype object with no toString) to '[unstringifiable]'. A dump
+     * must never throw.
      */
     private stringifyValue(value: unknown): string {
         if (value instanceof Error) {
@@ -1799,39 +1887,85 @@ export class Vittra {
         }
         try {
             const json = JSON.stringify(value);
-            return json === undefined ? String(value) : json;
+            if (json !== undefined) {
+                return json;
+            }
         } catch {
+            // Circular or otherwise unserializable — fall through to String()
+        }
+        try {
             return String(value);
+        } catch {
+            // A null-prototype object with no toString defeats String() too
+            return '[unstringifiable]';
         }
     }
 
     /**
-     * Serialize the entry array as JSON. The replacer turns Errors into
-     * {name, message, stack} and collapses circular/unstringifiable values to
-     * String(value) so the call never throws.
+     * Serialize the entry array as JSON. A depth-first walk sanitizes each entry
+     * so JSON.stringify runs cleanly: Errors become {name, message, stack}, a
+     * genuine ancestor cycle becomes '[Circular]' (a repeated *sibling* is not a
+     * cycle and serializes in full each time), and any value that defeats
+     * serialization collapses to a placeholder. The call never throws and one
+     * poison value never loses the whole dump.
      */
     private dumpJson(entries: VittraLogEntry[]): string {
-        const seen = new WeakSet<object>();
-        const replacer = (_key: string, value: unknown): unknown => {
-            if (value instanceof Error) {
-                return { name: value.name, message: value.message, stack: value.stack };
-            }
-            if (typeof value === 'object' && value !== null) {
-                if (seen.has(value)) {
-                    return String(value);
-                }
-                seen.add(value);
-            }
-            if (typeof value === 'bigint' || typeof value === 'function') {
-                return String(value);
-            }
-            return value;
-        };
         try {
-            return JSON.stringify(entries, replacer, 2);
+            const sanitized = entries.map((entry) => this.sanitizeForJson(entry, new Set()));
+            return JSON.stringify(sanitized, null, 2);
         } catch {
-            return String(entries);
+            // Every value is already sanitized; a final belt-and-braces guard
+            return '[]';
         }
+    }
+
+    /**
+     * Depth-first copy of a value safe to JSON.stringify. `ancestors` holds the
+     * objects on the *current path* (not every object ever seen), so only a true
+     * ancestor — a real cycle — is replaced with '[Circular]'; shared siblings
+     * are serialized in full each time. Errors and unstringifiable primitives
+     * are normalized in the same pass so no path can throw.
+     */
+    private sanitizeForJson(value: unknown, ancestors: Set<object>): unknown {
+        if (value instanceof Error) {
+            return { name: value.name, message: value.message, stack: value.stack };
+        }
+        if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+            try {
+                return String(value);
+            } catch {
+                return '[unstringifiable]';
+            }
+        }
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        if (ancestors.has(value)) {
+            return '[Circular]';
+        }
+        ancestors.add(value);
+        let result: unknown;
+        try {
+            if (Array.isArray(value)) {
+                const array: unknown[] = [];
+                for (const item of value) {
+                    array.push(this.sanitizeForJson(item, ancestors));
+                }
+                result = array;
+            } else {
+                const object: Record<string, unknown> = {};
+                const source = value as Record<string, unknown>;
+                for (const key of Object.keys(source)) {
+                    object[key] = this.sanitizeForJson(source[key], ancestors);
+                }
+                result = object;
+            }
+        } catch {
+            // A throwing getter or exotic object — don't let it break the dump
+            result = '[unstringifiable]';
+        }
+        ancestors.delete(value);
+        return result;
     }
 
     /**
@@ -1859,7 +1993,16 @@ export class Vittra {
             globalThis.document.body.appendChild(anchor);
             anchor.click();
             globalThis.document.body.removeChild(anchor);
-            globalThis.URL.revokeObjectURL(url);
+            // Defer revocation: some browsers (historically Firefox/Safari) drop
+            // an in-flight download when its object URL is revoked synchronously
+            // right after click().
+            setTimeout(() => {
+                try {
+                    globalThis.URL.revokeObjectURL(url);
+                } catch {
+                    // Revocation is best-effort
+                }
+            }, 1000);
         } catch {
             // Download is best-effort; the string return path is the reliable one
         }
@@ -1905,7 +2048,7 @@ export class Vittra {
      */
     checkUnclosedFunctions(): boolean {
         if (this.functionStack.length > 0) {
-            const unclosed = this.functionStack.join(', ');
+            const unclosed = this.functionStack.map((frame) => frame.func).join(', ');
             this.tfw(`Warning: Unclosed functions detected: ${unclosed}`);
             return true;
         }
