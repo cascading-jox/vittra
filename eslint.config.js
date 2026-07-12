@@ -23,6 +23,7 @@ export default [
         window: 'readonly',
         localStorage: 'readonly',
         Storage: 'readonly',
+        structuredClone: 'readonly',
       },
     },
     plugins: {

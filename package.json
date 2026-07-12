@@ -25,9 +25,11 @@
         "build": "pnpm run clean && pnpm run build:js && pnpm run build:types",
         "type-check": "tsc --noEmit",
         "verify-package": "publint",
-        "verify": "run-s type-check lint:fix test build verify-package",
+        "verify-types": "attw --pack . --profile esm-only",
+        "verify": "run-s type-check lint:fix test build verify-package verify-types",
         "prepublishOnly": "pnpm run verify",
         "test": "vitest run",
+        "bench": "vitest bench --run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage",
         "lint": "eslint .",
@@ -36,6 +38,7 @@
         "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\""
     },
     "devDependencies": {
+        "@arethetypeswrong/cli": "^0.18.4",
         "@commitlint/cli": "^19.8.1",
         "@commitlint/config-conventional": "^19.8.1",
         "@eslint/js": "^10.0.1",
