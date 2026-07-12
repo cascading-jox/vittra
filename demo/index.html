@@ -1,25 +1,117 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Vittra Playground</title>
+        <style>
+            :root {
+                color-scheme: light dark;
+            }
 
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Vittra Demo</title>
-  <script type="importmap">
-      {
-        "imports": {
-          "vittra": "/lib/src/index.ts"
-        }
-      }
-    </script>
-</head>
+            body {
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                line-height: 1.5;
+                max-width: 60rem;
+                margin: 0 auto;
+                padding: 2rem 1.5rem 4rem;
+            }
 
-<body>
-  <div id="app">
-    <h1>Vittra Demo</h1>
-    <p>Open the browser console to see the logger in action!</p>
-  </div>
-  <script type="module" src="/src/main.ts"></script>
-</body>
+            h1 {
+                margin-bottom: 0.25rem;
+            }
 
+            .intro {
+                margin: 0 0 2rem;
+                color: #666;
+            }
+
+            .intro code {
+                font-family: ui-monospace, monospace;
+                background: rgba(128, 128, 128, 0.18);
+                padding: 0.1rem 0.35rem;
+                border-radius: 4px;
+            }
+
+            section {
+                border-top: 1px solid rgba(128, 128, 128, 0.35);
+                padding: 1.25rem 0;
+            }
+
+            section h2 {
+                margin: 0 0 0.75rem;
+                font-size: 1.15rem;
+            }
+
+            .buttons {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                align-items: center;
+            }
+
+            button {
+                font: inherit;
+                padding: 0.4rem 0.8rem;
+                border: 1px solid rgba(128, 128, 128, 0.5);
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+                cursor: pointer;
+            }
+
+            button:hover {
+                border-color: currentColor;
+            }
+
+            input[type='text'] {
+                font: inherit;
+                padding: 0.35rem 0.5rem;
+                border: 1px solid rgba(128, 128, 128, 0.5);
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+            }
+
+            label {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.3rem;
+            }
+
+            .hint {
+                margin: 0.75rem 0 0;
+                color: #777;
+                font-size: 0.9rem;
+            }
+
+            .dump-output {
+                margin: 0.75rem 0 0;
+                padding: 0.75rem;
+                border-radius: 6px;
+                background: rgba(128, 128, 128, 0.12);
+                font-family: ui-monospace, monospace;
+                font-size: 0.8rem;
+                white-space: pre-wrap;
+                overflow-x: auto;
+            }
+        </style>
+    </head>
+
+    <body>
+        <div id="app">
+            <h1>Vittra Playground</h1>
+            <p class="intro">
+                Open DevTools and watch the console while clicking. Build the library first with
+                <code>pnpm build</code> — this page imports the compiled bundle from
+                <code>../dist/vittra.js</code>. The winged <code>🪽 vittra</code> banner lines
+                already at the top of the console are the level-2 instances announcing themselves on
+                load.
+            </p>
+        </div>
+        <script type="module" src="/src/main.ts"></script>
+    </body>
 </html>
