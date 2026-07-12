@@ -38,9 +38,11 @@ export interface VittraOptions {
      *
      * tfa operations are captured too: below level 2 with blackBox on, the
      * async machinery runs in capture-only mode, so the ⟳ entry, every
-     * scoped-logger log, and the ✓/✗ completion are all recorded (printed:
-     * false) without printing a thing. Every path — tf/tfc/tfw/tfe, tft,
-     * tfi/tfo, tfia/tfoa, and tfa — is black-boxed while silent.
+     * level-suppressed scoped-logger log, and the ✓/✗ completion are all
+     * recorded (printed: false) without printing a thing — scoped warnings and
+     * errors at level 1 print live instead, as they do everywhere. Every path —
+     * tf/tfc/tfw/tfe, tft, tfi/tfo, tfia/tfoa, and tfa — is black-boxed while
+     * silent.
      *
      * Cost when enabled: capturing while silent still pays the snapshot
      * (structuredClone) price per call — measured ~1 µs for small objects,
@@ -126,6 +128,9 @@ export interface VittraOptions {
  * Scoped logger handed to a tfa callback. Everything logged through it is
  * buffered into that async operation and replayed as one block when the
  * operation completes, so concurrent operations never interleave their logs.
+ * Below level 2 (without blackBox) the operation is untracked and every call
+ * falls back to live level-gated logging — warnings and errors still print at
+ * level 1, exactly like their instance-level counterparts.
  */
 export interface VittraOpLogger {
     tf(...valuesToLog: unknown[]): void;
@@ -1376,6 +1381,10 @@ export class Vittra {
      * Accepts either a callback receiving the scoped logger, or a bare
      * promise for one-line cases.
      *
+     * Below level 2 (without blackBox) the operation runs untracked: no ⟳/✓
+     * output and no buffering, but scoped tfw/tfe still print at level 1,
+     * exactly like their instance-level counterparts.
+     *
      * @param func The name of the operation
      * @param fnOrPromise Callback receiving a scoped logger, or a promise to time
      * @returns The callback's return value (or the promise's resolution)
@@ -1408,13 +1417,15 @@ export class Vittra {
         parentId: number | null,
     ): Promise<T> {
         // Below level 2 with blackBox off, the op is a pure passthrough — no id,
-        // no tracking, zero overhead. With blackBox on, the real machinery runs
-        // in capture-only mode: the entry, every scoped-logger log, and the
-        // completion are all recorded (printed: false) so the flight recorder
-        // sees inside silent operations. Prints stay gated on the level.
+        // no tracking, zero overhead; the scoped logger falls back to live
+        // level-gated logging so warnings and errors still honor level 1. With
+        // blackBox on, the real machinery runs in capture-only mode: the entry,
+        // every level-suppressed scoped-logger log, and the completion are all
+        // recorded (printed: false) so the flight recorder sees inside silent
+        // operations. Prints stay gated on the level.
         if (this.logLevel < 2 && !this.blackBox) {
             if (typeof fnOrPromise === 'function') {
-                return Promise.resolve(fnOrPromise(this.noopOpLogger));
+                return Promise.resolve(fnOrPromise(this.untrackedOpLogger));
             }
             return Promise.resolve(fnOrPromise);
         }
@@ -1626,8 +1637,11 @@ export class Vittra {
         const print = this.logLevel >= requiredLevel;
         // Disabled path: drop before any work unless black-boxing buffers silently
         if (!print && !this.blackBox) return;
-        if (op.status !== 'pending') {
-            // Operation already replayed — fall back to live logging
+        // Live fallbacks: an operation already replayed can't buffer anymore, and
+        // a warning/error admitted below level 2 must print NOW, exactly like its
+        // instance-level counterpart — the completion block never prints at this
+        // level, so buffering it would swallow what level 1 promises to show.
+        if (op.status !== 'pending' || (print && this.logLevel < 2)) {
             const mode =
                 level === 'clean'
                     ? 'tfc'
@@ -1694,12 +1708,20 @@ export class Vittra {
         return `font-weight: bold; color: ${OP_COLORS[opId % OP_COLORS.length]}`;
     }
 
-    private noopOpLogger: VittraOpLogger = {
-        tf: () => {},
-        tfc: () => {},
-        tfw: () => {},
-        tfe: () => {},
-        tft: () => {},
+    /**
+     * Scoped logger for operations the machinery is not tracking (below level 2
+     * without blackBox). Every call falls back to the instance's live,
+     * level-gated logging: trace content stays dropped below level 2, while
+     * warnings and errors keep printing at level 1 exactly as instance-level
+     * tfw/tfe do. Nested tfa calls still run (untracked, parentless).
+     */
+    private untrackedOpLogger: VittraOpLogger = {
+        tf: (...values: unknown[]) => this.logToConsole('tf', values),
+        tfc: (...values: unknown[]) => this.logToConsole('tfc', values),
+        tfw: (...values: unknown[]) => this.logToConsole('tfw', values),
+        tfe: (...values: unknown[]) => this.logToConsole('tfe', values),
+        tft: (data: Record<string, unknown> | Array<unknown>, properties?: string[]) =>
+            this.tft(data, properties),
         tfa: <T>(
             func: string,
             fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,

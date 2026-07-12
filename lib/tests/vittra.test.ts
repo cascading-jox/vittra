@@ -661,6 +661,75 @@ describe('Vittra', () => {
             expect(consoleLogSpy).not.toHaveBeenCalled();
             expect(consoleGroupSpy).not.toHaveBeenCalled();
         });
+
+        it('should print scoped tfw/tfe inside tfa live, like their top-level counterparts', async () => {
+            await log.tfa('op', async (t) => {
+                t.tfw('scoped warning');
+                t.tfe('scoped error');
+            });
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'scoped warning',
+            );
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'scoped error',
+            );
+            // The operation itself stays untracked: no ⟳/✓ trace output
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('scoped logger below level 2', () => {
+        it('should drop scoped warnings at level 0', async () => {
+            log = new Vittra({ banner: false, logLevel: 0 });
+            await log.tfa('op', async (t) => {
+                t.tfw('hidden');
+            });
+
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+        });
+
+        it('should print a scoped warning live when the level drops to 1 mid-operation', async () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+            await log.tfa('op', async (t) => {
+                log.setLogLevel(1);
+                t.tfw('late warning');
+            });
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'late warning',
+            );
+        });
+
+        it('should print scoped warnings live at level 1 under blackBox with a truthful printed flag', async () => {
+            const captured: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 1,
+                blackBox: true,
+                onEntry: (entry) => captured.push(entry),
+            });
+            await log.tfa('op', async (t) => {
+                t.tfw('scoped warning');
+            });
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'scoped warning',
+            );
+            const entry = captured.find(
+                (candidate) => candidate.kind === 'log' && candidate.level === 'warn',
+            );
+            expect(entry?.printed).toBe(true);
+        });
     });
 
     describe('tfa async wrapper', () => {
