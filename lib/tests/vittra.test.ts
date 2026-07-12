@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { Vittra, VittraOptions } from '../src/vittra';
+import type { VittraLogEntry } from '../src/vittra';
 
 describe('Vittra', () => {
     let log: Vittra;
@@ -898,6 +899,243 @@ describe('Vittra', () => {
                 'inside op',
                 '  [Δ 0.0 ms]',
             );
+        });
+    });
+
+    describe('ring buffer and dump', () => {
+        it('should retain only the most recent entries and dump them in order', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 3 });
+            log.tf('one');
+            log.tf('two');
+            log.tf('three');
+            log.tf('four');
+            log.tf('five');
+
+            const dump = log.dump();
+            expect(dump).not.toContain('one');
+            expect(dump).not.toContain('two');
+            expect(dump).toContain('three');
+            expect(dump).toContain('four');
+            expect(dump).toContain('five');
+            expect(dump.indexOf('three')).toBeLessThan(dump.indexOf('four'));
+            expect(dump.indexOf('four')).toBeLessThan(dump.indexOf('five'));
+        });
+
+        it('dump text mirrors console markers and orders entries by capture time', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 50 });
+            log.tf('alpha');
+            log.tfi('fn', 1);
+            log.tfo('fn', 2);
+            await log.tfa('op', async (t) => {
+                t.tf('inside-op');
+            });
+            log.tf('omega');
+
+            const dump = log.dump();
+            expect(dump).toContain('--> fn(1)');
+            expect(dump).toContain('<-- fn = 2');
+            expect(dump).toContain('⟳ op');
+            expect(dump).toContain('✓ op');
+
+            const order = ['alpha', '--> fn', '<-- fn', '⟳ op', 'inside-op', '✓ op', 'omega'];
+            const positions = order.map((token) => dump.indexOf(token));
+            for (const position of positions) {
+                expect(position).toBeGreaterThanOrEqual(0);
+            }
+            for (let i = 1; i < positions.length; i++) {
+                expect(positions[i]).toBeGreaterThan(positions[i - 1]);
+            }
+
+            // The tfa buffered log sits at its CAPTURE position (before the ✓
+            // replay in the buffer), whereas console replay prints it afterward.
+            expect(dump.indexOf('inside-op')).toBeLessThan(dump.indexOf('✓ op'));
+        });
+
+        it('dump text carries the error of a failed operation', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+
+            await expect(
+                log.tfa('op', async () => {
+                    throw new Error('boom');
+                }),
+            ).rejects.toThrow('boom');
+
+            expect(log.dump()).toContain('✗ op #1 — Error: boom');
+        });
+
+        it('should serialize as JSON with Error values surviving as objects', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            log.tfe(new Error('boom'));
+
+            const json = log.dump({ format: 'json' });
+            const parsed = JSON.parse(json) as VittraLogEntry[];
+            expect(Array.isArray(parsed)).toBe(true);
+
+            const logEntry = parsed.find((entry) => entry.kind === 'log');
+            expect(logEntry).toBeDefined();
+            const errorValue = (logEntry as { values: Array<{ message?: string }> }).values[0];
+            expect(errorValue.message).toBe('boom');
+        });
+
+        it('should store nothing and dump empty when bufferSize is 0', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 0 });
+            log.tf('nothing');
+            log.tfi('fn');
+            log.tfo('fn');
+
+            expect(log.dump()).toBe('');
+            // Printing is unaffected by a disabled buffer
+            expect(consoleLogSpy).toHaveBeenCalled();
+        });
+
+        it('should clear the buffer on reset', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
+            log.tf('a');
+            log.tf('b');
+            expect(log.dump()).not.toBe('');
+
+            log.reset();
+            expect(log.dump()).toBe('');
+        });
+    });
+
+    describe('blackBox', () => {
+        it('should capture at level 0 while printing nothing', () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true });
+            log.tf('secret');
+            log.tfi('fn', 1);
+            log.tfo('fn', 2);
+            log.tft({ a: 1 });
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+            expect(consoleTableSpy).not.toHaveBeenCalled();
+
+            const dump = log.dump();
+            expect(dump).toContain('secret');
+            expect(dump).toContain('--> fn(1)');
+            expect(dump).toContain('<-- fn = 2');
+        });
+
+        it('should capture nothing at level 0 without blackBox', () => {
+            log = new Vittra({ banner: false, logLevel: 0 });
+            log.tf('x');
+            log.tfi('fn');
+            log.tfo('fn');
+
+            expect(log.dump()).toBe('');
+        });
+    });
+
+    describe('onEntry hook', () => {
+        it('should fire per captured entry with the correct printed flag', () => {
+            const silent: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 0,
+                blackBox: true,
+                onEntry: (entry) => silent.push(entry),
+            });
+            log.tf('quiet');
+            expect(silent).toHaveLength(1);
+            expect(silent[0].printed).toBe(false);
+
+            const loud: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 2,
+                onEntry: (entry) => loud.push(entry),
+            });
+            log.tf('loud');
+            expect(loud[loud.length - 1].printed).toBe(true);
+        });
+
+        it('should not re-fire when a tfa buffer is replayed', async () => {
+            const captured: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 2,
+                onEntry: (entry) => captured.push(entry),
+            });
+
+            await log.tfa('op', async (t) => {
+                t.tf('inside-op');
+            });
+
+            const insideCaptures = captured.filter(
+                (entry) =>
+                    entry.kind === 'log' && JSON.stringify(entry.values).includes('inside-op'),
+            );
+            expect(insideCaptures).toHaveLength(1);
+        });
+
+        it('should swallow a throwing hook without breaking subsequent logging', () => {
+            log = new Vittra({
+                banner: false,
+                logLevel: 2,
+                onEntry: () => {
+                    throw new Error('hook boom');
+                },
+            });
+
+            expect(() => log.tf('first')).not.toThrow();
+            log.tf('second');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'second');
+        });
+    });
+
+    describe('dumpOnError', () => {
+        let errorHandler: (() => void) | undefined;
+        let addEventListenerSpy: MockInstance;
+
+        beforeEach(() => {
+            errorHandler = undefined;
+            addEventListenerSpy = vi
+                .spyOn(globalThis, 'addEventListener')
+                .mockImplementation((type: string, handler: unknown) => {
+                    if (type === 'error') {
+                        errorHandler = handler as () => void;
+                    }
+                });
+        });
+
+        afterEach(() => {
+            addEventListenerSpy.mockRestore();
+        });
+
+        it('should print a banner group and one line per buffered entry on an error', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10, dumpOnError: true });
+            log.tf('breadcrumb-one');
+            log.tf('breadcrumb-two');
+
+            consoleGroupSpy.mockClear();
+            consoleLogSpy.mockClear();
+            consoleGroupEndSpy.mockClear();
+
+            expect(errorHandler).toBeTypeOf('function');
+            errorHandler?.();
+
+            expect(consoleGroupSpy).toHaveBeenCalledWith(
+                expect.stringContaining('vittra — last 2 entries before uncaught error'),
+                expect.stringContaining('linear-gradient'),
+            );
+            expect(consoleLogSpy).toHaveBeenCalledTimes(2);
+            expect(consoleLogSpy.mock.calls[0][0]).toContain('breadcrumb-one');
+            expect(consoleLogSpy.mock.calls[1][0]).toContain('breadcrumb-two');
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('should do nothing on an error when the buffer is empty', () => {
+            log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10, dumpOnError: true });
+
+            consoleGroupSpy.mockClear();
+            consoleLogSpy.mockClear();
+
+            errorHandler?.();
+
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+            expect(consoleLogSpy).not.toHaveBeenCalled();
         });
     });
 });

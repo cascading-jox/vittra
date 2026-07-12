@@ -15,6 +15,55 @@ export interface VittraOptions {
     logWithType?: boolean;
     /** Set false to suppress the one-line startup banner (only shown when logging is enabled) */
     banner?: boolean;
+    /**
+     * Ring-buffer capacity: how many of the most recent captured entries to
+     * retain for dump() and the onEntry hook. Default 300; 0 disables
+     * buffering. Captured entries hold references to the snapshots already
+     * made for printing, so buffering what is printed costs ~nothing — memory
+     * stays bounded by the ring.
+     */
+    bufferSize?: number;
+    /**
+     * Capture into the buffer (and fire onEntry for) everything that WOULD
+     * print at level 2, even while the current level suppresses printing — a
+     * silent flight recorder. Nothing extra is printed. Default false.
+     *
+     * Scope limitation: tfa keeps its no-op passthrough below level 2, so
+     * tfa-scoped logs are NOT black-boxed. Only the plain paths
+     * (tf/tfc/tfw/tfe, tft, tfi/tfo, tfia/tfoa) capture while silent.
+     *
+     * Cost when enabled: capturing while silent still pays the snapshot
+     * (structuredClone) price per call — measured ~1 µs for small objects,
+     * ~16 µs for ~100-key objects, the ring push and hook adding only tens of
+     * nanoseconds on top. When false (default) the disabled path stays a plain
+     * early return with zero extra work.
+     */
+    blackBox?: boolean;
+    /**
+     * Called once per captured entry, at capture time, with printed reflecting
+     * whether the entry also reached the console (false for black-boxed
+     * captures). Never fires again when a tfa buffer is replayed. A throwing
+     * hook is swallowed silently and never breaks logging or the app.
+     *
+     * Sentry breadcrumb recipe:
+     * ```typescript
+     * onEntry: (e) => Sentry.addBreadcrumb({
+     *     category: 'vittra',
+     *     message: e.kind === 'log' ? e.values.map(String).join(' ') : e.kind,
+     *     level: e.level === 'error' ? 'error' : 'info',
+     * })
+     * ```
+     */
+    onEntry?: (entry: VittraLogEntry) => void;
+    /**
+     * Register global 'error' and 'unhandledrejection' listeners that print
+     * the buffered entries — the last frames before a crash — as flat text
+     * lines when an uncaught error escapes. Does nothing when the buffer is
+     * empty. Default false. Pairs with blackBox for a flight recorder that
+     * records silently and reveals its tape only on a crash. SSR-safe:
+     * skipped where addEventListener is unavailable.
+     */
+    dumpOnError?: boolean;
 }
 
 /**
@@ -86,9 +135,23 @@ type LogEntry =
           /** Parent id for the ←#n back-reference on a standalone replayed child */
           badgeParent?: number;
           duration?: number;
+          /** The rejection value of a failed operation, so dumps carry it */
+          error?: unknown;
       }
     | { kind: 'asyncPending'; func: string; opId: number }
     | { kind: 'opError'; error: unknown };
+
+/**
+ * A captured trace entry: the raw LogEntry data plus the wall-clock time it
+ * was captured and whether it also reached the console. This is what the ring
+ * buffer stores, what dump() serializes, and what the onEntry hook receives.
+ */
+export type VittraLogEntry = LogEntry & {
+    /** Epoch milliseconds (Date.now()) at capture time */
+    timestamp: number;
+    /** True when the entry was written to the console; false for black-boxed captures */
+    printed: boolean;
+};
 
 interface AsyncOp {
     id: number;
@@ -136,11 +199,15 @@ const LOG_LEVEL_KEY = 'vittraLogLevel';
 /** Library version — updated by release automation */
 const VITTRA_VERSION = '0.5.0'; // x-release-please-version
 
+/** Winged-badge gradient shared by the startup banner and the dumpOnError header */
+const BANNER_STYLE =
+    'background:linear-gradient(135deg,#5c6bc0,#26a69a);color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold';
+
 /** One-line startup banner confirming that tracing is active and why */
 function printBanner(level: number, levelSource: string): void {
     console.log(
         `%c🪽 vittra%c v${VITTRA_VERSION} · level ${level} · via ${levelSource}`,
-        'background:linear-gradient(135deg,#5c6bc0,#26a69a);color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold',
+        BANNER_STYLE,
         'color:#8a8a8a',
     );
 }
@@ -252,6 +319,18 @@ export class Vittra {
     private nextAsyncId: number = 1;
     /** Ops in their synchronous start phase — parents for nested tfa calls */
     private currentOpStack: number[] = [];
+    /** Capture everything printable at level 2 even while the level suppresses printing */
+    private blackBox: boolean;
+    /** Fired at capture time for every captured entry; a throwing hook is swallowed */
+    private onEntry?: (entry: VittraLogEntry) => void;
+    /** Ring-buffer capacity; 0 disables capture entirely */
+    private bufferSize: number;
+    /** Preallocated ring of captured entries; never shifted, only overwritten */
+    private buffer: VittraLogEntry[];
+    /** Next slot to write in the ring */
+    private bufferWriteIndex: number = 0;
+    /** Number of valid entries (caps at bufferSize once the ring has wrapped) */
+    private bufferCount: number = 0;
 
     constructor(options: VittraOptions = {}) {
         // URL parameter overrides the option; an omitted option falls back to a persisted level
@@ -262,6 +341,22 @@ export class Vittra {
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
         this.timers = [];
+
+        this.blackBox = options.blackBox === true;
+        this.onEntry = options.onEntry;
+        // Any non-positive or non-finite size disables buffering
+        const requestedSize = options.bufferSize;
+        this.bufferSize =
+            requestedSize === undefined
+                ? 300
+                : Number.isFinite(requestedSize) && requestedSize > 0
+                  ? Math.floor(requestedSize)
+                  : 0;
+        this.buffer = this.bufferSize > 0 ? new Array(this.bufferSize) : [];
+
+        if (options.dumpOnError === true) {
+            this.registerErrorListeners();
+        }
 
         if (this.logLevel >= 1 && options.banner !== false) {
             let levelSource = 'option';
@@ -372,7 +467,9 @@ export class Vittra {
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
         // Level 1 shows warnings and errors only; plain logs need level 2
         const requiredLevel = mode === 'tfw' || mode === 'tfe' ? 1 : 2;
-        if (this.logLevel < requiredLevel) return;
+        const print = this.logLevel >= requiredLevel;
+        // Disabled path: return before any work unless black-boxing captures silently
+        if (!print && !this.blackBox) return;
 
         const level =
             mode === 'tfc' ? 'clean' : mode === 'tfw' ? 'warn' : mode === 'tfe' ? 'error' : 'log';
@@ -381,22 +478,83 @@ export class Vittra {
         if (this.logTime && typeof lastTimer === 'number') {
             delta = performance.now() - lastTimer;
         }
-        this.emit({
-            kind: 'log',
-            level,
-            values: this.snapshot(valuesToLog),
-            delta,
-            withType: this.logWithType,
-        });
+        this.emit(
+            {
+                kind: 'log',
+                level,
+                values: this.snapshot(valuesToLog),
+                delta,
+                withType: this.logWithType,
+            },
+            { print },
+        );
     }
 
     /**
      * The one ingress for trace content. Every gated logging path funnels its
-     * raw entry through here; later stages hang consumers (ring buffer, hooks,
-     * dump) off this single choke point.
+     * raw entry through here. capture routes it into the ring buffer and the
+     * onEntry hook; print routes it to the console. Live paths do both; replay
+     * and presentation-only paths print without re-capturing; black-boxed
+     * captures capture without printing.
      */
-    private emit(entry: LogEntry): void {
-        this.printEntry(entry);
+    private emit(entry: LogEntry, options: { print?: boolean; capture?: boolean } = {}): void {
+        const print = options.print ?? true;
+        const capture = options.capture ?? true;
+        if (capture) {
+            this.capture(entry, print);
+        }
+        if (print) {
+            this.printEntry(entry);
+        }
+    }
+
+    /**
+     * Record an entry into the ring buffer and fire the onEntry hook. Mutates
+     * the passed entry in place with its capture metadata — every call site
+     * builds a fresh entry, so there is no aliasing to worry about, and it
+     * avoids a per-call copy. printed carries whether the entry also reached
+     * the console.
+     */
+    private capture(entry: LogEntry, printed: boolean): void {
+        // Nothing consumes captures — stay allocation-free
+        if (this.bufferSize <= 0 && this.onEntry === undefined) return;
+
+        const captured = entry as VittraLogEntry;
+        captured.timestamp = Date.now();
+        captured.printed = printed;
+
+        if (this.bufferSize > 0) {
+            this.buffer[this.bufferWriteIndex] = captured;
+            this.bufferWriteIndex = (this.bufferWriteIndex + 1) % this.bufferSize;
+            if (this.bufferCount < this.bufferSize) {
+                this.bufferCount++;
+            }
+        }
+
+        if (this.onEntry !== undefined) {
+            try {
+                this.onEntry(captured);
+            } catch {
+                // A throwing hook must never break logging or the app
+            }
+        }
+    }
+
+    /** Snapshot the ring's contents oldest → newest, skipping unfilled slots */
+    private orderedBuffer(): VittraLogEntry[] {
+        if (this.bufferSize <= 0 || this.bufferCount === 0) return [];
+        const ordered: VittraLogEntry[] = [];
+        if (this.bufferCount < this.bufferSize) {
+            for (let i = 0; i < this.bufferCount; i++) {
+                ordered.push(this.buffer[i]);
+            }
+        } else {
+            // Wrapped: the oldest live entry sits at the write cursor
+            for (let i = 0; i < this.bufferSize; i++) {
+                ordered.push(this.buffer[(this.bufferWriteIndex + i) % this.bufferSize]);
+            }
+        }
+        return ordered;
     }
 
     /**
@@ -547,7 +705,8 @@ export class Vittra {
      */
     tfia(func: string, ...args: unknown[]): number {
         const opId = this.nextAsyncId++;
-        if (this.logLevel < 2) return opId;
+        const print = this.logLevel >= 2;
+        if (!print && !this.blackBox) return opId;
 
         this.asyncOps.set(opId, {
             id: opId,
@@ -561,7 +720,7 @@ export class Vittra {
         });
         this.evictOrphanedManualOps();
 
-        this.emit({ kind: 'asyncStart', func, opId, args: this.snapshot(args) });
+        this.emit({ kind: 'asyncStart', func, opId, args: this.snapshot(args) }, { print });
 
         return opId;
     }
@@ -601,7 +760,8 @@ export class Vittra {
      * ```
      */
     tfoa(func: string, opId: number, ...returnValues: unknown[]): void {
-        if (this.logLevel < 2) return;
+        const print = this.logLevel >= 2;
+        if (!print && !this.blackBox) return;
 
         const op = this.asyncOps.get(opId);
         if (!op || op.func !== func) {
@@ -610,13 +770,16 @@ export class Vittra {
         }
 
         const duration = performance.now() - op.start;
-        this.emit({
-            kind: 'asyncEnd',
-            func,
-            opId,
-            values: this.snapshot(returnValues),
-            duration: this.logTime ? duration : undefined,
-        });
+        this.emit(
+            {
+                kind: 'asyncEnd',
+                func,
+                opId,
+                values: this.snapshot(returnValues),
+                duration: this.logTime ? duration : undefined,
+            },
+            { print },
+        );
 
         this.recordCompleted(op, 'done', duration);
         this.asyncOps.delete(opId);
@@ -755,33 +918,44 @@ export class Vittra {
             values: op.resultValues,
             badgeParent: standalone && op.parent !== null ? op.parent : undefined,
             duration: this.logTime && op.duration !== undefined ? op.duration : undefined,
+            error: op.status === 'failed' ? op.error : undefined,
         });
 
+        // Buffered content was captured at buffer time; replay only prints it
         for (const entry of op.buffer) {
             if (entry.kind === 'log') {
-                this.emit({
-                    kind: 'log',
-                    level: entry.level,
-                    values: entry.values,
-                    delta: this.logTime ? entry.delta : undefined,
-                });
+                this.emit(
+                    {
+                        kind: 'log',
+                        level: entry.level,
+                        values: entry.values,
+                        delta: this.logTime ? entry.delta : undefined,
+                    },
+                    { capture: false },
+                );
             } else if (entry.kind === 'table') {
-                this.emit({ kind: 'table', data: entry.data, properties: entry.properties });
+                this.emit(
+                    { kind: 'table', data: entry.data, properties: entry.properties },
+                    { capture: false },
+                );
             } else {
                 const child = this.asyncOps.get(entry.childId);
                 if (child && child.status !== 'pending') {
                     this.replayOp(child, false);
                     this.asyncOps.delete(child.id);
                 } else if (child) {
-                    this.emit({ kind: 'asyncPending', func: child.func, opId: child.id });
+                    this.emit(
+                        { kind: 'asyncPending', func: child.func, opId: child.id },
+                        { capture: false },
+                    );
                 }
             }
         }
 
         if (op.status === 'failed' && op.error !== undefined) {
-            this.emit({ kind: 'opError', error: op.error });
+            this.emit({ kind: 'opError', error: op.error }, { capture: false });
         }
-        this.emit({ kind: 'groupEnd' });
+        this.emit({ kind: 'groupEnd' }, { capture: false });
     }
 
     private createOpLogger(op: AsyncOp): VittraOpLogger {
@@ -794,6 +968,8 @@ export class Vittra {
                 if (this.logLevel < 2) return;
                 if (op.status === 'pending') {
                     op.buffer.push({ kind: 'table', data, properties });
+                    // Chronological truth: capture at buffer time, not at replay
+                    this.capture({ kind: 'table', data, properties }, true);
                 } else {
                     this.tft(data, properties);
                 }
@@ -821,12 +997,16 @@ export class Vittra {
             this.logToConsole(mode, values);
             return;
         }
+        const snapshotted = this.snapshot(values);
         op.buffer.push({
             kind: 'log',
             level,
-            values: this.snapshot(values),
+            values: snapshotted,
             delta: performance.now() - op.start,
         });
+        // Chronological truth: capture at buffer time, not at the later replay.
+        // Buffered logs always replay-print at level >= 2, so printed is true.
+        this.capture({ kind: 'log', level, values: snapshotted }, true);
     }
 
     private recordCompleted(op: AsyncOp, status: 'done' | 'failed', duration: number): void {
@@ -897,16 +1077,17 @@ export class Vittra {
      * ```
      */
     tfi(func: string, ...callerArgs: unknown[]): void {
-        if (this.logLevel < 2) return;
+        const print = this.logLevel >= 2;
+        if (!print && !this.blackBox) return;
 
-        // Add function to stack
+        // Track the stack even while black-boxing so tfo still pairs correctly
         this.functionStack.push(func);
 
         if (this.logTime === true) {
             this.timers.push(performance.now());
         }
 
-        this.emit({ kind: 'funcEntry', func, values: this.snapshot(callerArgs) });
+        this.emit({ kind: 'funcEntry', func, values: this.snapshot(callerArgs) }, { print });
     }
 
     /**
@@ -925,7 +1106,8 @@ export class Vittra {
      * ```
      */
     tfo(func: string, ...returnValues: unknown[]): void {
-        if (this.logLevel < 2) return;
+        const print = this.logLevel >= 2;
+        if (!print && !this.blackBox) return;
 
         if (!this.functionStack.includes(func)) {
             this.tfw(`Warning: tfo called for '${func}' but no matching tfi found`);
@@ -944,7 +1126,8 @@ export class Vittra {
                 if (this.logTime === true && this.timers.length > 0) {
                     this.timers.pop();
                 }
-                this.emit({ kind: 'groupEnd' });
+                // Auto-close is presentation-only: print the group close, never capture
+                this.emit({ kind: 'groupEnd' }, { print, capture: false });
             }
             this.tfw(
                 `Warning: Unexpected tfo call for '${func}'. Auto-closed unclosed functions: ${orphanedFunctions.join(', ')}`,
@@ -962,7 +1145,10 @@ export class Vittra {
             }
         }
 
-        this.emit({ kind: 'funcExit', func, values: this.snapshot(returnValues), duration });
+        this.emit(
+            { kind: 'funcExit', func, values: this.snapshot(returnValues), duration },
+            { print },
+        );
     }
 
     /**
@@ -1034,24 +1220,226 @@ export class Vittra {
      * ```
      */
     tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
-        if (this.logLevel < 2) return;
-        this.emit({ kind: 'table', data: tabularData, properties });
+        const print = this.logLevel >= 2;
+        if (!print && !this.blackBox) return;
+        this.emit({ kind: 'table', data: tabularData, properties }, { print });
     }
 
     /**
      * Reset all tracing state: closes any console groups left open by
-     * unmatched tfi calls and clears function, timer, and async-operation
-     * tracking. Use to recover when a trace has gone out of sync.
+     * unmatched tfi calls, empties the capture ring, and clears function,
+     * timer, and async-operation tracking. Use to recover when a trace has
+     * gone out of sync.
      */
     reset(): void {
+        // Only real, printed groups need closing — black-boxed groups never opened
+        const closeGroups = this.logLevel >= 2;
         for (let i = 0; i < this.functionStack.length; i++) {
-            this.emit({ kind: 'groupEnd' });
+            this.emit({ kind: 'groupEnd' }, { print: closeGroups, capture: false });
         }
         this.functionStack = [];
         this.timers = [];
         this.asyncOps.clear();
         this.completedOps = [];
         this.currentOpStack = [];
+        this.buffer = this.bufferSize > 0 ? new Array(this.bufferSize) : [];
+        this.bufferWriteIndex = 0;
+        this.bufferCount = 0;
+    }
+
+    /**
+     * Export the ring buffer's contents, oldest → newest — the recent trace
+     * even at log levels that print nothing. This is the point of buffering:
+     * it works at any level.
+     * @param options.format 'text' (default) renders one readable line per
+     *   entry (ISO time, a console-mirroring marker, func name, safely
+     *   stringified values); 'json' returns the raw entry array (Error values
+     *   become {name, message, stack}, circular/unstringifiable values become
+     *   String(value)).
+     * @param options.download true also writes the string to a file the
+     *   browser downloads (vittra-log-&lt;ISO&gt;.txt/.json). Best-effort — the
+     *   returned string is always the reliable path.
+     * @returns The formatted buffer contents.
+     */
+    dump(options: { format?: 'text' | 'json'; download?: boolean } = {}): string {
+        const format = options.format ?? 'text';
+        const entries = this.orderedBuffer();
+        const content = format === 'json' ? this.dumpJson(entries) : this.dumpText(entries);
+        if (options.download === true) {
+            this.downloadDump(content, format);
+        }
+        return content;
+    }
+
+    /** Render captured entries as one flat, human-readable line each */
+    private dumpText(entries: VittraLogEntry[]): string {
+        const lines: string[] = [];
+        for (const entry of entries) {
+            lines.push(this.dumpTextLine(entry));
+        }
+        return lines.join('\n');
+    }
+
+    /** One text line for an entry: ISO time, console-mirroring marker, values */
+    private dumpTextLine(entry: VittraLogEntry): string {
+        const time = new Date(entry.timestamp).toISOString();
+        switch (entry.kind) {
+            case 'log': {
+                const tag =
+                    entry.level === 'warn' ? ' WARN' : entry.level === 'error' ? ' ERROR' : '';
+                const values = entry.values.map((value) => this.stringifyValue(value)).join(' ');
+                return `${time} +${tag} ${values}`;
+            }
+            case 'table':
+                return `${time} table ${this.stringifyValue(entry.data)}`;
+            case 'funcEntry': {
+                const args = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                return `${time} --> ${entry.func}(${args})`;
+            }
+            case 'funcExit': {
+                const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                return values
+                    ? `${time} <-- ${entry.func} = ${values}`
+                    : `${time} <-- ${entry.func}`;
+            }
+            case 'asyncStart': {
+                const args = entry.args
+                    ? entry.args.map((value) => this.stringifyValue(value)).join(', ')
+                    : '';
+                return `${time} ⟳ ${entry.func} #${entry.opId}${args ? ` (${args})` : ''}`;
+            }
+            case 'asyncEnd': {
+                const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                return values
+                    ? `${time} ✓ ${entry.func} #${entry.opId} = ${values}`
+                    : `${time} ✓ ${entry.func} #${entry.opId}`;
+            }
+            case 'asyncComplete': {
+                const mark = entry.status === 'failed' ? '✗' : '✓';
+                const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                let line = `${time} ${mark} ${entry.func} #${entry.opId}`;
+                if (values) {
+                    line += ` = ${values}`;
+                }
+                if (entry.error !== undefined) {
+                    line += ` — ${this.stringifyValue(entry.error)}`;
+                }
+                return line;
+            }
+            default:
+                // asyncPending, groupEnd and opError are never captured; safe fallback
+                return `${time} ${entry.kind}`;
+        }
+    }
+
+    /**
+     * JSON.stringify a single value for the text dump. Errors collapse to
+     * "Error: <message>"; anything JSON refuses (functions, symbols, circular
+     * refs) falls back to String(value). A dump must never throw.
+     */
+    private stringifyValue(value: unknown): string {
+        if (value instanceof Error) {
+            return `Error: ${value.message}`;
+        }
+        try {
+            const json = JSON.stringify(value);
+            return json === undefined ? String(value) : json;
+        } catch {
+            return String(value);
+        }
+    }
+
+    /**
+     * Serialize the entry array as JSON. The replacer turns Errors into
+     * {name, message, stack} and collapses circular/unstringifiable values to
+     * String(value) so the call never throws.
+     */
+    private dumpJson(entries: VittraLogEntry[]): string {
+        const seen = new WeakSet<object>();
+        const replacer = (_key: string, value: unknown): unknown => {
+            if (value instanceof Error) {
+                return { name: value.name, message: value.message, stack: value.stack };
+            }
+            if (typeof value === 'object' && value !== null) {
+                if (seen.has(value)) {
+                    return String(value);
+                }
+                seen.add(value);
+            }
+            if (typeof value === 'bigint' || typeof value === 'function') {
+                return String(value);
+            }
+            return value;
+        };
+        try {
+            return JSON.stringify(entries, replacer, 2);
+        } catch {
+            return String(entries);
+        }
+    }
+
+    /**
+     * Trigger a browser download of the dump string. Everything here can be
+     * absent (SSR, jsdom lacks URL.createObjectURL), so it is fully guarded and
+     * silent on failure — the returned dump string is the reliable path.
+     */
+    private downloadDump(content: string, format: 'text' | 'json'): void {
+        try {
+            if (
+                typeof globalThis.Blob !== 'function' ||
+                typeof globalThis.URL?.createObjectURL !== 'function' ||
+                typeof globalThis.document === 'undefined'
+            ) {
+                return;
+            }
+            const extension = format === 'json' ? 'json' : 'txt';
+            const mimeType = format === 'json' ? 'application/json' : 'text/plain';
+            const stamp = new Date().toISOString().replace(/:/g, '-');
+            const blob = new globalThis.Blob([content], { type: mimeType });
+            const url = globalThis.URL.createObjectURL(blob);
+            const anchor = globalThis.document.createElement('a');
+            anchor.href = url;
+            anchor.download = `vittra-log-${stamp}.${extension}`;
+            globalThis.document.body.appendChild(anchor);
+            anchor.click();
+            globalThis.document.body.removeChild(anchor);
+            globalThis.URL.revokeObjectURL(url);
+        } catch {
+            // Download is best-effort; the string return path is the reliable one
+        }
+    }
+
+    /**
+     * Register global error listeners for dumpOnError. Guarded so SSR or a
+     * restricted environment without addEventListener silently does nothing.
+     */
+    private registerErrorListeners(): void {
+        try {
+            if (typeof globalThis.addEventListener !== 'function') return;
+            const handler = (): void => this.printErrorDump();
+            globalThis.addEventListener('error', handler);
+            globalThis.addEventListener('unhandledrejection', handler);
+        } catch {
+            // No global event target — nothing to hook
+        }
+    }
+
+    /**
+     * Print the buffered entries as flat text lines under a winged-badge group
+     * when an uncaught error escapes. Bypasses printEntry deliberately: routing
+     * buffered funcEntry groups through it would corrupt live group nesting.
+     */
+    private printErrorDump(): void {
+        const entries = this.orderedBuffer();
+        if (entries.length === 0) return;
+        console.group(
+            `%c🪽 vittra — last ${entries.length} entries before uncaught error`,
+            BANNER_STYLE,
+        );
+        for (const entry of entries) {
+            console.log(this.dumpTextLine(entry));
+        }
+        console.groupEnd();
     }
 
     /**

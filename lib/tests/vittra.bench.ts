@@ -38,6 +38,12 @@ const largeObject: Record<string, unknown> = (() => {
 // library tolerates that and the explicit logLevel option wins regardless.
 const disabled = new Vittra({ banner: false, logLevel: 0, logTime: true });
 const active = new Vittra({ banner: false, logLevel: 2, logTime: true });
+// Silent flight recorder: captures at level 0 without printing.
+const blackBox = new Vittra({ banner: false, logLevel: 0, logTime: true, blackBox: true });
+// Level 2 with a no-op onEntry hook to price the hook dispatch + try/catch.
+const withHook = new Vittra({ banner: false, logLevel: 2, logTime: true, onEntry: noop });
+// Level 2 with buffering disabled to isolate the ring-push cost of the default.
+const noBuffer = new Vittra({ banner: false, logLevel: 2, logTime: true, bufferSize: 0 });
 
 // --- disabled path: every trace call must early-return in nanoseconds ---
 
@@ -70,6 +76,26 @@ bench('level 2: tfa op with one buffered log', async () => {
         t.tf('step');
         return 1;
     });
+});
+
+// --- blackBox: capture while silent pays the snapshot price, prints nothing ---
+
+bench('level 0 blackBox: tf with small object', () => {
+    blackBox.tf(smallObject);
+});
+
+bench('level 0 blackBox: tf with large object', () => {
+    blackBox.tf(largeObject);
+});
+
+// --- capture consumers: onEntry hook cost, and buffer-push cost in isolation ---
+
+bench('level 2 + onEntry noop hook: tf with small object', () => {
+    withHook.tf(smallObject);
+});
+
+bench('level 2 bufferSize 0: tf with small object', () => {
+    noBuffer.tf(smallObject);
 });
 
 // --- reference: the structuredClone cost that snapshotValue pays per value ---
