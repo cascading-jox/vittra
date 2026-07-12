@@ -1075,6 +1075,138 @@ describe('Vittra', () => {
         });
     });
 
+    describe('blackBox tfa operations', () => {
+        it('should capture a silent tfa operation and its scoped logs while printing nothing', async () => {
+            const captured: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 0,
+                blackBox: true,
+                bufferSize: 50,
+                onEntry: (entry) => captured.push(entry),
+            });
+
+            const result = await log.tfa('fetchUser', async (t) => {
+                t.tf('got response');
+                return { ok: true };
+            });
+
+            expect(result).toEqual({ ok: true });
+
+            // Nothing reaches the console while silent
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+
+            // The dump holds the whole operation: entry, scoped log, completion
+            const dump = log.dump();
+            expect(dump).toContain('⟳ fetchUser #1');
+            expect(dump).toContain('got response');
+            expect(dump).toContain('✓ fetchUser #1');
+            // The scoped log sits at its capture position, before the ✓ completion
+            expect(dump.indexOf('got response')).toBeLessThan(dump.indexOf('✓ fetchUser'));
+
+            // Every captured entry was black-boxed: seen but never printed
+            expect(captured).toHaveLength(3);
+            expect(captured.every((entry) => entry.printed === false)).toBe(true);
+            expect(captured.some((entry) => entry.kind === 'asyncStart')).toBe(true);
+            expect(captured.some((entry) => entry.kind === 'asyncComplete')).toBe(true);
+        });
+
+        it('should capture nested silent operations with the child linked to its parent', async () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true, bufferSize: 50 });
+
+            // Hold the child open past the parent so it settles as a standalone
+            // block carrying the ←#parent back-reference (badgeParent).
+            let releaseChild!: () => void;
+            const gate = new Promise<void>((resolve) => {
+                releaseChild = resolve;
+            });
+            let childPromise!: Promise<void>;
+
+            await log.tfa('parent', async (t) => {
+                childPromise = t.tfa('child', () => gate);
+            });
+
+            releaseChild();
+            await childPromise;
+
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+
+            const entries = JSON.parse(log.dump({ format: 'json' })) as VittraLogEntry[];
+            const parentComplete = entries.find(
+                (entry) => entry.kind === 'asyncComplete' && entry.opId === 1,
+            );
+            const childComplete = entries.find(
+                (entry) => entry.kind === 'asyncComplete' && entry.opId === 2,
+            );
+
+            expect(parentComplete).toBeDefined();
+            expect(childComplete).toBeDefined();
+            // The standalone child records its parent's id as the back-reference
+            expect((childComplete as { badgeParent?: number }).badgeParent).toBe(1);
+            expect(entries.every((entry) => entry.printed === false)).toBe(true);
+        });
+
+        it('should capture the error of a failing silent operation and still rethrow', async () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true, bufferSize: 10 });
+
+            await expect(
+                log.tfa('op', async () => {
+                    throw new Error('boom');
+                }),
+            ).rejects.toThrow('boom');
+
+            // The failure block never prints while silent
+            expect(consoleErrorSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+
+            expect(log.dump()).toContain('✗ op #1 — Error: boom');
+        });
+
+        it('should print the replay block when the level escalates mid-operation', async () => {
+            log = new Vittra({ banner: false, logLevel: 0, blackBox: true, logTime: true });
+            performanceNowSpy.mockReturnValue(1000);
+            const color1 = 'font-weight: bold; color: #e91e63';
+
+            await log.tfa('op', async (t) => {
+                t.tf('before');
+                log.setLogLevel(2);
+                return 7;
+            });
+
+            // The completion decision is made at completion time: the level has
+            // risen, so the whole block replays to the console now.
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ op #1 [0.0 ms] =', color1, 7);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'before',
+                '  [Δ 0.0 ms]',
+            );
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+            // The ⟳ start line never printed — the operation started silent
+            expect(consoleLogSpy.mock.calls.some((call) => String(call[0]).includes('⟳'))).toBe(
+                false,
+            );
+        });
+
+        it('should leave a tfa fully silent and uncaptured at level 0 without blackBox', async () => {
+            log = new Vittra({ banner: false, logLevel: 0, bufferSize: 10 });
+
+            const result = await log.tfa('op', async (t) => {
+                t.tf('hidden');
+                return 5;
+            });
+
+            expect(result).toBe(5);
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+            expect(log.dump()).toBe('');
+        });
+    });
+
     describe('onEntry hook', () => {
         it('should fire per captured entry with the correct printed flag', () => {
             const silent: VittraLogEntry[] = [];
@@ -1751,6 +1883,149 @@ describe('Vittra', () => {
             const unnamed = new Vittra({ banner: false }); // unmentioned → 0
             unnamed.tf('hidden');
             expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('throttle', () => {
+        it('is off by default: every entry prints and the print path never reads the clock', () => {
+            log = new Vittra({ banner: false, logLevel: 2 }); // logTime off, throttle off
+            performanceNowSpy.mockClear();
+
+            for (let i = 0; i < 10; i++) {
+                log.tf(`msg ${i}`);
+            }
+
+            // All ten print — no rate limit
+            expect(consoleLogSpy).toHaveBeenCalledTimes(10);
+            // The throttle-off print path makes zero performance.now calls, which
+            // is what keeps the position-sensitive timing mocks undisturbed.
+            expect(performanceNowSpy).not.toHaveBeenCalled();
+        });
+
+        it('prints up to the limit per window, suppresses the rest, then summarizes on rollover', () => {
+            performanceNowSpy.mockReturnValue(1000);
+            log = new Vittra({ banner: false, logLevel: 2, throttle: 5 });
+
+            for (let i = 0; i < 10; i++) {
+                log.tf(`msg ${i}`);
+            }
+
+            // Exactly five of the ten reached the console; no summary mid-window
+            expect(consoleLogSpy).toHaveBeenCalledTimes(5);
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+
+            // Advance the mocked clock past the 1s window and log once more
+            performanceNowSpy.mockReturnValue(2000);
+            log.tf('after window');
+
+            // The rollover prints the summary warn (mentioning the 5 suppressed)
+            // and then the new entry.
+            expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+            expect(String(consoleWarnSpy.mock.calls[0][0])).toContain('5');
+            expect(String(consoleWarnSpy.mock.calls[0][0])).toContain('suppressed');
+            expect(consoleLogSpy).toHaveBeenCalledTimes(6);
+        });
+
+        it('captures all entries despite suppression, with printed flags reflecting reality', () => {
+            performanceNowSpy.mockReturnValue(1000);
+            const captured: VittraLogEntry[] = [];
+            log = new Vittra({
+                banner: false,
+                logLevel: 2,
+                throttle: 5,
+                bufferSize: 50,
+                onEntry: (entry) => captured.push(entry),
+            });
+
+            for (let i = 0; i < 10; i++) {
+                log.tf(`m${i}`);
+            }
+
+            // onEntry fired for every entry, suppressed ones included
+            const logs = captured.filter((entry) => entry.kind === 'log');
+            expect(logs).toHaveLength(10);
+            expect(logs.filter((entry) => entry.printed)).toHaveLength(5);
+            expect(logs.filter((entry) => !entry.printed)).toHaveLength(5);
+
+            // dump() holds all ten regardless of what printed
+            const dump = log.dump();
+            for (let i = 0; i < 10; i++) {
+                expect(dump).toContain(`m${i}`);
+            }
+        });
+
+        it('a suppressed tfi leaves no dangling groupEnd', () => {
+            performanceNowSpy.mockReturnValue(1000);
+            log = new Vittra({ banner: false, logLevel: 2, throttle: 1 });
+
+            log.tf('uses the one slot'); // consumes the window's single print
+            log.tfi('fn'); // group-open throttled away → printedGroup false
+            log.tfo('fn'); // its close must be skipped, not left dangling
+
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+            expect(consoleGroupEndSpy).not.toHaveBeenCalled();
+        });
+
+        it('a printed tfi still closes its group even when the exit line is throttled', () => {
+            performanceNowSpy.mockReturnValue(1000);
+            log = new Vittra({ banner: false, logLevel: 2, throttle: 1 });
+
+            log.tfi('fn'); // opens the group, consuming the one slot
+            log.tfo('fn'); // exit LINE suppressed, but the group must still close
+
+            expect(consoleGroupSpy).toHaveBeenCalledTimes(1);
+            // groupEnd is structural — exempt from the throttle — so it fires
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+            // ...while the '<-- fn' exit line itself was rate-limited away
+            expect(
+                consoleLogSpy.mock.calls.some((call) => String(call[0]).includes('<-- fn')),
+            ).toBe(false);
+        });
+
+        it('suppresses a whole tfa replay block atomically when the window is exhausted', async () => {
+            performanceNowSpy.mockReturnValue(1000);
+            log = new Vittra({ banner: false, logLevel: 2, throttle: 1, bufferSize: 50 });
+
+            log.tf('exhaust the window'); // consumes the single print slot
+
+            await log.tfa('op', async (t) => {
+                t.tf('inside one');
+                t.tf('inside two');
+                return 42;
+            });
+
+            // Nothing from the block reached the console: the ✓ header is a
+            // console.group, and it never opened — so no partial header/lines.
+            expect(consoleGroupSpy).not.toHaveBeenCalled();
+
+            // The dump still holds the whole operation despite the suppression.
+            const dump = log.dump();
+            expect(dump).toContain('⟳ op');
+            expect(dump).toContain('inside one');
+            expect(dump).toContain('inside two');
+            expect(dump).toContain('✓ op');
+        });
+
+        it('prints a whole tfa replay block atomically when the window has room', async () => {
+            performanceNowSpy.mockReturnValue(1000);
+            log = new Vittra({ banner: false, logLevel: 2, throttle: 100 });
+            const color1 = 'font-weight: bold; color: #e91e63';
+
+            await log.tfa('op', async (t) => {
+                t.tf('inside one');
+                t.tf('inside two');
+                return 1;
+            });
+
+            // Header, both buffered lines, and the close all print together.
+            expect(consoleGroupSpy).toHaveBeenCalledWith('%c✓ op #1 =', color1, 1);
+            expect(
+                consoleLogSpy.mock.calls.some((call) => String(call).includes('inside one')),
+            ).toBe(true);
+            expect(
+                consoleLogSpy.mock.calls.some((call) => String(call).includes('inside two')),
+            ).toBe(true);
+            expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
         });
     });
 });

@@ -96,6 +96,13 @@ bench('level 0 blackBox: tf with large object', () => {
     blackBox.tf(largeObject);
 });
 
+bench('level 0 blackBox: tfa op with one buffered log', async () => {
+    await blackBox.tfa('op', async (t) => {
+        t.tf('step');
+        return 1;
+    });
+});
+
 // --- perfMarks: real performance.mark/measure emitted from emit() ---
 
 // LANDMINE: every measured iteration leaves one real performance.measure in the

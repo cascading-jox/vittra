@@ -36,9 +36,11 @@ export interface VittraOptions {
      * print at level 2, even while the current level suppresses printing — a
      * silent flight recorder. Nothing extra is printed. Default false.
      *
-     * Scope limitation: tfa keeps its no-op passthrough below level 2, so
-     * tfa-scoped logs are NOT black-boxed. Only the plain paths
-     * (tf/tfc/tfw/tfe, tft, tfi/tfo, tfia/tfoa) capture while silent.
+     * tfa operations are captured too: below level 2 with blackBox on, the
+     * async machinery runs in capture-only mode, so the ⟳ entry, every
+     * scoped-logger log, and the ✓/✗ completion are all recorded (printed:
+     * false) without printing a thing. Every path — tf/tfc/tfw/tfe, tft,
+     * tfi/tfo, tfia/tfoa, and tfa — is black-boxed while silent.
      *
      * Cost when enabled: capturing while silent still pays the snapshot
      * (structuredClone) price per call — measured ~1 µs for small objects,
@@ -94,6 +96,30 @@ export interface VittraOptions {
      * session. Enable this while profiling, not permanently in production.
      */
     perfMarks?: boolean;
+    /**
+     * Rate-limit PRINTED console output to at most this many entries per
+     * second, per instance. 0 or undefined (default) disables throttling
+     * entirely. A hot loop logging thousands of lines makes DevTools unusable —
+     * rendering is the expensive part — so throttling drops the surplus PRINTS
+     * while capture is untouched: the ring buffer and the onEntry hook still
+     * record every entry (printed: false for the suppressed ones), so dump()
+     * stays complete.
+     *
+     * The window is a fixed 1-second bucket. When a window that suppressed
+     * anything rolls over, the next printed entry is preceded by a one-line
+     * console.warn summarizing how many entries were dropped and reminding that
+     * the buffer kept recording. Structural group closes are never throttled,
+     * so console nesting stays balanced; a whole tfa replay block shares one
+     * throttle decision, so it prints or suppresses atomically — never
+     * half-drawn.
+     *
+     * Never limits capture, dump(), or onEntry — only what reaches the console.
+     * When off (default) the print path pays a single falsy check: no clock
+     * read, no allocation. Use it in production hot paths where the buffer with
+     * dumpOnError or onEntry is your real record and the live console is only a
+     * convenience.
+     */
+    throttle?: number;
 }
 
 /**
@@ -251,6 +277,9 @@ const COMPLETED_OPS_LIMIT = 50;
 
 /** How many pending manual (tfia) operations to keep before evicting the oldest */
 const MANUAL_OPS_LIMIT = 100;
+
+/** Length of the fixed rate-limit window, in milliseconds, for the throttle option */
+const THROTTLE_WINDOW_MS = 1000;
 
 /** Name of both the URL parameter and the localStorage key for the log level */
 const LOG_LEVEL_KEY = 'vittraLogLevel';
@@ -515,6 +544,14 @@ export class Vittra {
     private perfMarks: boolean;
     /** Monotonic source of unique function span mark names (perfMarks only) */
     private perfMarkCounter: number = 0;
+    /** Max printed console entries per 1-second window; 0 disables throttling */
+    private throttle: number;
+    /** performance.now() timestamp when the current throttle window opened */
+    private throttleWindowStart: number = -Infinity;
+    /** Prints admitted in the current throttle window */
+    private throttlePrinted: number = 0;
+    /** Prints suppressed in the current window; drives the rollover summary */
+    private throttleSuppressed: number = 0;
     /** Namespace label; addressable in level specs and shown as a badge */
     private readonly name?: string;
     /** `%c[name]` format segment prepended to every printed line ('' when unnamed) */
@@ -586,6 +623,15 @@ export class Vittra {
                   ? Math.floor(requestedSize)
                   : 0;
         this.buffer = this.bufferSize > 0 ? new Array(this.bufferSize) : [];
+
+        // Any non-positive or non-finite limit disables throttling
+        const requestedThrottle = options.throttle;
+        this.throttle =
+            requestedThrottle !== undefined &&
+            Number.isFinite(requestedThrottle) &&
+            requestedThrottle > 0
+                ? Math.floor(requestedThrottle)
+                : 0;
 
         if (options.dumpOnError === true) {
             this.registerErrorListeners();
@@ -834,13 +880,35 @@ export class Vittra {
      * and presentation-only paths print without re-capturing; black-boxed
      * captures capture without printing.
      */
-    private emit(entry: LogEntry, options: { print?: boolean; capture?: boolean } = {}): void {
-        const print = options.print ?? true;
+    private emit(
+        entry: LogEntry,
+        options: { print?: boolean; capture?: boolean; throttleForced?: boolean } = {},
+    ): boolean {
+        let print = options.print ?? true;
         const capture = options.capture ?? true;
         // Fire spans for every entry that reaches emit — printed, captured, or
         // both — so black-boxed traces still profile. A single flag when off.
         if (this.perfMarks) {
             this.applyPerfMark(entry);
+        }
+        // Throttle the PRINT path only (capture/onEntry are never affected). Off
+        // (this.throttle === 0) short-circuits here, so the disabled path is one
+        // falsy check — no clock read, no allocation. A groupEnd is structural: a
+        // printed group's close must never be throttled or the console nests
+        // forever. A replay block passes throttleForced so its lines share the
+        // header's single decision and the block cannot tear mid-replay.
+        if (print && this.throttle && entry.kind !== 'groupEnd') {
+            const forced = options.throttleForced;
+            if (forced === undefined) {
+                print = this.throttleAdmit();
+            } else {
+                if (forced) {
+                    this.throttlePrinted++;
+                } else {
+                    this.throttleSuppressed++;
+                }
+                print = forced;
+            }
         }
         if (capture) {
             this.capture(entry, print);
@@ -848,6 +916,49 @@ export class Vittra {
         if (print) {
             this.printEntry(entry);
         }
+        return print;
+    }
+
+    /**
+     * The live throttle decision for one printed entry. Rolls the fixed
+     * 1-second window when it has elapsed — first emitting the suppression
+     * summary for a completed window that hid anything — then admits the entry
+     * while the window still has room, counting it as printed or suppressed.
+     * Only ever reached on the print path with the throttle active, so its
+     * clock read is never paid when throttling is off.
+     */
+    private throttleAdmit(): boolean {
+        const now = performance.now();
+        if (now - this.throttleWindowStart >= THROTTLE_WINDOW_MS) {
+            if (this.throttleSuppressed > 0) {
+                this.printThrottleSummary(this.throttleSuppressed);
+            }
+            this.throttleWindowStart = now;
+            this.throttlePrinted = 0;
+            this.throttleSuppressed = 0;
+        }
+        if (this.throttlePrinted < this.throttle) {
+            this.throttlePrinted++;
+            return true;
+        }
+        this.throttleSuppressed++;
+        return false;
+    }
+
+    /**
+     * Announce a throttle window that suppressed prints, once, as the next
+     * window opens. A direct console.warn — a deliberate egress exception, like
+     * the banner and tfat — because routing a meta-notice through emit would
+     * itself be throttled or captured. Reassures that the ring buffer kept
+     * recording, so dump() remains complete.
+     */
+    private printThrottleSummary(suppressed: number): void {
+        const nameSegment = this.name !== undefined ? `[${this.name}] ` : '';
+        const noun = suppressed === 1 ? 'entry' : 'entries';
+        console.warn(
+            `%c${nameSegment}vittra throttle: suppressed ${suppressed} console ${noun} in the last second (buffer kept recording)`,
+            this.boldStyle,
+        );
     }
 
     /**
@@ -981,9 +1092,11 @@ export class Vittra {
      * and the group-indentation stack. It owns all presentation — prefixes, op
      * colors, comma interspersing, %o type specifiers, and time suffixes.
      *
-     * Two paths deliberately bypass this egress and call console directly: the
-     * startup banner (printBanner) and the operation table (tfat). The crash
-     * dump (printErrorDump) is a third, documented at its own definition.
+     * Four paths deliberately bypass this egress and call console directly: the
+     * startup banner (printBanner), the operation table (tfat), the crash dump
+     * (printErrorDump, documented at its own definition), and the throttle
+     * rollover summary (printThrottleSummary) — each a meta-notice that must
+     * neither be captured nor rate-limited alongside real trace content.
      */
     private printEntry(entry: LogEntry): void {
         // Named instances prepend a %c[name] badge to every line; unnamed
@@ -1294,7 +1407,12 @@ export class Vittra {
         fnOrPromise: ((t: VittraOpLogger) => T | Promise<T>) | Promise<T>,
         parentId: number | null,
     ): Promise<T> {
-        if (this.logLevel < 2) {
+        // Below level 2 with blackBox off, the op is a pure passthrough — no id,
+        // no tracking, zero overhead. With blackBox on, the real machinery runs
+        // in capture-only mode: the entry, every scoped-logger log, and the
+        // completion are all recorded (printed: false) so the flight recorder
+        // sees inside silent operations. Prints stay gated on the level.
+        if (this.logLevel < 2 && !this.blackBox) {
             if (typeof fnOrPromise === 'function') {
                 return Promise.resolve(fnOrPromise(this.noopOpLogger));
             }
@@ -1325,7 +1443,9 @@ export class Vittra {
             }
         } else {
             op.parent = null;
-            this.emit({ kind: 'asyncStart', func, opId });
+            // The entry prints only at level 2; a silent blackBox start captures
+            // it (printed: false) without a live ⟳ line.
+            this.emit({ kind: 'asyncStart', func, opId }, { print: this.logLevel >= 2 });
         }
 
         let result: T | Promise<T>;
@@ -1383,27 +1503,51 @@ export class Vittra {
         if (parent && parent.status === 'pending') {
             return; // replayed inline when the parent completes
         }
-        if (this.logLevel >= 2) {
-            this.replayOp(op, true);
+        // Replay at completion time: the level NOW decides whether the block
+        // prints, so an op that started silent under blackBox but escalated
+        // before settling prints its replay. blackBox keeps replaying
+        // (capture-only, printed: false) while silent; without it a level that
+        // dropped below 2 skips replay entirely, exactly as before.
+        if (this.logLevel >= 2 || this.blackBox) {
+            this.replayOp(op, true, this.logLevel >= 2);
         }
         this.asyncOps.delete(op.id);
     }
 
     /**
-     * Print a completed operation's block: header, buffered lines in order,
-     * completed children inlined as nested blocks at their start position.
+     * Replay a completed operation's block: header, buffered lines in order,
+     * completed children inlined as nested blocks at their start position. print
+     * gates every console write — false replays a blackBox op silently, still
+     * capturing the completion (printed: false) but printing nothing. The
+     * completion header is the only entry captured here; everything else was
+     * captured at buffer time and replays print-only.
+     *
+     * When throttling is active the header makes one throttle decision for the
+     * whole block; that fate is forced onto every line and threaded to nested
+     * children via `forced`, so a rate-limited replay prints or suppresses
+     * atomically and never tears.
      */
-    private replayOp(op: AsyncOp, standalone: boolean): void {
-        this.emit({
-            kind: 'asyncComplete',
-            func: op.func,
-            opId: op.id,
-            status: op.status === 'failed' ? 'failed' : 'done',
-            values: op.resultValues,
-            badgeParent: standalone && op.parent !== null ? op.parent : undefined,
-            duration: this.logTime && op.duration !== undefined ? op.duration : undefined,
-            error: op.status === 'failed' ? op.error : undefined,
-        });
+    private replayOp(op: AsyncOp, standalone: boolean, print: boolean, forced?: boolean): void {
+        // The header carries the block's throttle fate: at a block root (forced
+        // undefined) emit decides live and returns whether it printed; a nested
+        // inline child receives that fate as `forced` and reuses it. With
+        // throttle off, forced is unused and this behaves exactly as before.
+        const printed = this.emit(
+            {
+                kind: 'asyncComplete',
+                func: op.func,
+                opId: op.id,
+                status: op.status === 'failed' ? 'failed' : 'done',
+                values: op.resultValues,
+                badgeParent: standalone && op.parent !== null ? op.parent : undefined,
+                duration: this.logTime && op.duration !== undefined ? op.duration : undefined,
+                error: op.status === 'failed' ? op.error : undefined,
+            },
+            { print, throttleForced: forced },
+        );
+        // Below the header, force every emit to the header's fate. undefined when
+        // throttle is off leaves emit's normal zero-cost path in place.
+        const blockForced = this.throttle ? printed : undefined;
 
         // Buffered content was captured at buffer time; replay only prints it
         for (const entry of op.buffer) {
@@ -1415,31 +1559,35 @@ export class Vittra {
                         values: entry.values,
                         delta: this.logTime ? entry.delta : undefined,
                     },
-                    { capture: false },
+                    { print, capture: false, throttleForced: blockForced },
                 );
             } else if (entry.kind === 'table') {
                 this.emit(
                     { kind: 'table', data: entry.data, properties: entry.properties },
-                    { capture: false },
+                    { print, capture: false, throttleForced: blockForced },
                 );
             } else {
                 const child = this.asyncOps.get(entry.childId);
                 if (child && child.status !== 'pending') {
-                    this.replayOp(child, false);
+                    this.replayOp(child, false, print, blockForced);
                     this.asyncOps.delete(child.id);
                 } else if (child) {
                     this.emit(
                         { kind: 'asyncPending', func: child.func, opId: child.id },
-                        { capture: false },
+                        { print, capture: false, throttleForced: blockForced },
                     );
                 }
             }
         }
 
         if (op.status === 'failed' && op.error !== undefined) {
-            this.emit({ kind: 'opError', error: op.error }, { capture: false });
+            this.emit(
+                { kind: 'opError', error: op.error },
+                { print, capture: false, throttleForced: blockForced },
+            );
         }
-        this.emit({ kind: 'groupEnd' }, { capture: false });
+        // groupEnd is structural (throttle-exempt); close iff the block printed.
+        this.emit({ kind: 'groupEnd' }, { print: printed, capture: false });
     }
 
     private createOpLogger(op: AsyncOp): VittraOpLogger {
@@ -1449,16 +1597,18 @@ export class Vittra {
             tfw: (...values: unknown[]) => this.bufferLog(op, 'warn', values),
             tfe: (...values: unknown[]) => this.bufferLog(op, 'error', values),
             tft: (data: Record<string, unknown> | Array<unknown>, properties?: string[]) => {
-                if (this.logLevel < 2) return;
+                const print = this.logLevel >= 2;
+                if (!print && !this.blackBox) return;
                 if (op.status === 'pending') {
                     // Buffer keeps the LIVE object for the replay console.table;
                     // the ring copy is snapshotted so a later mutation of the
                     // object can't rewrite what dump()/onEntry report.
                     op.buffer.push({ kind: 'table', data, properties });
-                    // Chronological truth: capture at buffer time, not at replay
+                    // Chronological truth: capture at buffer time, not at replay.
+                    // printed reflects the level now (false under a silent blackBox).
                     this.capture(
                         { kind: 'table', data: this.snapshotTableData(data), properties },
-                        true,
+                        print,
                     );
                 } else {
                     this.tft(data, properties);
@@ -1473,7 +1623,9 @@ export class Vittra {
 
     private bufferLog(op: AsyncOp, level: BufferedLog['level'], values: unknown[]): void {
         const requiredLevel = level === 'warn' || level === 'error' ? 1 : 2;
-        if (this.logLevel < requiredLevel) return;
+        const print = this.logLevel >= requiredLevel;
+        // Disabled path: drop before any work unless black-boxing buffers silently
+        if (!print && !this.blackBox) return;
         if (op.status !== 'pending') {
             // Operation already replayed — fall back to live logging
             const mode =
@@ -1495,8 +1647,9 @@ export class Vittra {
             delta: performance.now() - op.start,
         });
         // Chronological truth: capture at buffer time, not at the later replay.
-        // Buffered logs always replay-print at level >= 2, so printed is true.
-        this.capture({ kind: 'log', level, values: snapshotted }, true);
+        // printed reflects the level now: a live level-2 buffer captures
+        // printed: true, a silent blackBox buffer printed: false.
+        this.capture({ kind: 'log', level, values: snapshotted }, print);
     }
 
     private recordCompleted(op: AsyncOp, status: 'done' | 'failed', duration: number): void {
@@ -1579,13 +1732,18 @@ export class Vittra {
         // Track the frame even while black-boxing so tfo still pairs correctly.
         // printedGroup records whether this frame's console.group actually
         // printed, so tfo/reset can close exactly the groups that opened.
-        this.functionStack.push({ func, printedGroup: print, markName });
+        const frame: FunctionFrame = { func, printedGroup: print, markName };
+        this.functionStack.push(frame);
 
         if (this.logTime === true) {
             this.timers.push(performance.now());
         }
 
-        this.emit(
+        // emit returns whether the group actually printed. A throttle-suppressed
+        // funcEntry never opened its console.group, so record that as the frame's
+        // printedGroup: the matching tfo/reset then closes exactly the groups
+        // that opened, and a suppressed entry's group is naturally never closed.
+        frame.printedGroup = this.emit(
             { kind: 'funcEntry', func, values: this.snapshot(callerArgs), markName },
             { print },
         );
@@ -1808,6 +1966,11 @@ export class Vittra {
         this.buffer = this.bufferSize > 0 ? new Array(this.bufferSize) : [];
         this.bufferWriteIndex = 0;
         this.bufferCount = 0;
+        // Start a fresh throttle window so a resumed trace is not suppressed by
+        // a stale count, and drop any pending suppression tally silently.
+        this.throttleWindowStart = -Infinity;
+        this.throttlePrinted = 0;
+        this.throttleSuppressed = 0;
     }
 
     /**

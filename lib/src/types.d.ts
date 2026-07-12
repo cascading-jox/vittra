@@ -36,9 +36,11 @@ export interface VittraOptions {
      * print at level 2, even while the current level suppresses printing — a
      * silent flight recorder. Nothing extra is printed. Default false.
      *
-     * Scope limitation: tfa keeps its no-op passthrough below level 2, so
-     * tfa-scoped logs are NOT black-boxed. Only the plain paths
-     * (tf/tfc/tfw/tfe, tft, tfi/tfo, tfia/tfoa) capture while silent.
+     * tfa operations are captured too: below level 2 with blackBox on, the
+     * async machinery runs in capture-only mode, so the ⟳ entry, every
+     * scoped-logger log, and the ✓/✗ completion are all recorded (printed:
+     * false) without printing a thing. Every path — tf/tfc/tfw/tfe, tft,
+     * tfi/tfo, tfia/tfoa, and tfa — is black-boxed while silent.
      *
      * Cost when enabled: capturing while silent still pays the snapshot
      * (structuredClone) price per call — measured ~1 µs for small objects,
@@ -94,6 +96,28 @@ export interface VittraOptions {
      * session. Enable this while profiling, not permanently in production.
      */
     perfMarks?: boolean;
+    /**
+     * Rate-limit PRINTED console output to at most this many entries per
+     * second, per instance. 0 or undefined (default) disables throttling
+     * entirely. A hot loop logging thousands of lines makes DevTools unusable —
+     * rendering is the expensive part — so throttling drops the surplus PRINTS
+     * while capture is untouched: the ring buffer and the onEntry hook still
+     * record every entry (printed: false for the suppressed ones), so dump()
+     * stays complete.
+     *
+     * The window is a fixed 1-second bucket. When a window that suppressed
+     * anything rolls over, the next printed entry is preceded by a one-line
+     * console.warn summarizing how many entries were dropped and reminding that
+     * the buffer kept recording. Structural group closes are never throttled,
+     * so console nesting stays balanced; a whole tfa replay block shares one
+     * throttle decision, so it prints or suppresses atomically — never
+     * half-drawn.
+     *
+     * Never limits capture, dump(), or onEntry — only what reaches the console.
+     * When off (default) the print path pays a single falsy check: no clock
+     * read, no allocation.
+     */
+    throttle?: number;
 }
 
 /**
