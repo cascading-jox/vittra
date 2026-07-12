@@ -423,7 +423,7 @@ export function _resetVittraModuleState(): void {
 }
 
 /** Library version — updated by release automation */
-const VITTRA_VERSION = '0.7.0'; // x-release-please-version
+const VITTRA_VERSION = '0.7.1'; // x-release-please-version
 
 /** Winged-badge gradient shared by the startup banner and the dumpOnError header */
 const BANNER_STYLE =
