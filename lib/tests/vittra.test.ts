@@ -1127,6 +1127,17 @@ describe('Vittra', () => {
             expect(log.dump()).toContain('✗ op #1 — Error: boom');
         });
 
+        it('dump text carries durations when logTime is on', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true, bufferSize: 20 });
+            log.tfi('fn');
+            log.tfo('fn', 'out');
+            await log.tfa('op', Promise.resolve(1));
+
+            const dump = log.dump();
+            expect(dump).toContain('<-- fn [0.0 ms] = "out"');
+            expect(dump).toContain('✓ op #1 [0.0 ms] = 1');
+        });
+
         it('should serialize as JSON with Error values surviving as objects', () => {
             log = new Vittra({ banner: false, logLevel: 2, bufferSize: 10 });
             log.tfe(new Error('boom'));
@@ -1582,6 +1593,18 @@ describe('Vittra', () => {
             expect(measureSpy.mock.calls.filter(([n]) => n === 'vittra: inner')).toHaveLength(0);
         });
 
+        it('should clear the start mark of an evicted manual op without measuring it', () => {
+            log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
+            const firstOpId = log.tfia('firstOp');
+            for (let i = 0; i < 100; i++) {
+                log.tfia('filler');
+            }
+
+            expect(clearMarksSpy).toHaveBeenCalledWith(`vittra-op-${firstOpId}`);
+            const measuredNames = measureSpy.mock.calls.map(([name]) => name);
+            expect(measuredNames).not.toContain(`vittra: firstOp #${firstOpId}`);
+        });
+
         it('should do nothing at level 0 without blackBox', () => {
             log = new Vittra({ banner: false, logLevel: 0, perfMarks: true });
             log.tfi('fn');
@@ -1837,7 +1860,7 @@ describe('Vittra', () => {
 
             expect(consoleGroupEndSpy).not.toHaveBeenCalled();
             // The exit line still follows the current level's print gate
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- a ', 'font-weight: bold');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c<-- a', 'font-weight: bold');
         });
 
         it('a matched tfo closes a printed group even after the level dropped to 0', () => {

@@ -1011,6 +1011,15 @@ export class Vittra {
         }
     }
 
+    /** Drop an op's un-consumed start mark (op evicted or reset before completion) */
+    private clearOpStartMark(opId: number): void {
+        try {
+            performance.clearMarks(`vittra-op-${opId}`);
+        } catch {
+            // Perf integration is best-effort
+        }
+    }
+
     /**
      * Close a function span: measure from its start mark, then clear the mark.
      * The measure name repeats across recursive frames by design; only the
@@ -1161,17 +1170,17 @@ export class Vittra {
                 // The group close is emitted separately (as a groupEnd) so it can
                 // follow the frame's own printedGroup, independent of this line.
                 const runtime =
-                    entry.duration !== undefined ? `[${this.formatTime(entry.duration)}]` : '';
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
                 if (entry.values.length > 0) {
                     console.log(
-                        `${badge}%c<-- ${entry.func} ${runtime} =`,
+                        `${badge}%c<-- ${entry.func}${runtime} =`,
                         ...badgeStyle,
                         this.boldStyle,
                         ...intersperseCommas(entry.values),
                     );
                 } else {
                     console.log(
-                        `${badge}%c<-- ${entry.func} ${runtime}`,
+                        `${badge}%c<-- ${entry.func}${runtime}`,
                         ...badgeStyle,
                         this.boldStyle,
                     );
@@ -1707,6 +1716,10 @@ export class Vittra {
             }
         }
         if (pendingManual > MANUAL_OPS_LIMIT && oldest !== undefined) {
+            // The evicted op will never measure — drop its stranded start mark
+            if (this.perfMarks) {
+                this.clearOpStartMark(oldest.id);
+            }
             this.asyncOps.delete(oldest.id);
             this.tfw(
                 `Warning: evicting orphaned async operation ${oldest.func} #${oldest.id} after ${MANUAL_OPS_LIMIT} pending manual operations without a matching tfoa`,
@@ -1983,11 +1996,7 @@ export class Vittra {
                 }
             }
             for (const opId of this.asyncOps.keys()) {
-                try {
-                    performance.clearMarks(`vittra-op-${opId}`);
-                } catch {
-                    // Perf integration is best-effort
-                }
+                this.clearOpStartMark(opId);
             }
         }
         this.functionStack = [];
@@ -2059,9 +2068,11 @@ export class Vittra {
             }
             case 'funcExit': {
                 const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                const runtime =
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
                 return values
-                    ? `${time} <-- ${entry.func} = ${values}`
-                    : `${time} <-- ${entry.func}`;
+                    ? `${time} <-- ${entry.func}${runtime} = ${values}`
+                    : `${time} <-- ${entry.func}${runtime}`;
             }
             case 'asyncStart': {
                 const args = entry.args
@@ -2071,14 +2082,18 @@ export class Vittra {
             }
             case 'asyncEnd': {
                 const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
+                const runtime =
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
                 return values
-                    ? `${time} ✓ ${entry.func} #${entry.opId} = ${values}`
-                    : `${time} ✓ ${entry.func} #${entry.opId}`;
+                    ? `${time} ✓ ${entry.func} #${entry.opId}${runtime} = ${values}`
+                    : `${time} ✓ ${entry.func} #${entry.opId}${runtime}`;
             }
             case 'asyncComplete': {
                 const mark = entry.status === 'failed' ? '✗' : '✓';
                 const values = entry.values.map((value) => this.stringifyValue(value)).join(', ');
-                let line = `${time} ${mark} ${entry.func} #${entry.opId}`;
+                const runtime =
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
+                let line = `${time} ${mark} ${entry.func} #${entry.opId}${runtime}`;
                 if (values) {
                     line += ` = ${values}`;
                 }
