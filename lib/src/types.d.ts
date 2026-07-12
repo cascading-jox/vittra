@@ -64,6 +64,24 @@ export interface VittraOptions {
      * skipped where addEventListener is unavailable.
      */
     dumpOnError?: boolean;
+    /**
+     * Emit User Timing spans for traced functions and async operations so they
+     * surface in the DevTools Performance profiler alongside frames and network
+     * activity. Each tfi/tfo pair becomes a `performance.measure` named
+     * `vittra: <func>`, and each tfa/tfia/tfoa operation one named
+     * `vittra: <func> #<opId>`, spanning entry to exit; the start marks are
+     * cleared once consumed. Default false.
+     *
+     * When off, emit pays a single flag check — the disabled path is untouched.
+     * When on, every emitted entry costs one mark or measure call, wrapped in
+     * try/catch behind a one-time feature check so engines without the User
+     * Timing options form silently skip it.
+     *
+     * The measures are deliberately left in the User Timing buffer — they are
+     * the artifact you inspect — so spans accumulate for the duration of the
+     * session. Enable this while profiling, not permanently in production.
+     */
+    perfMarks?: boolean;
 }
 
 /**

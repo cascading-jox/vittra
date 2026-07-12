@@ -1138,4 +1138,138 @@ describe('Vittra', () => {
             expect(consoleLogSpy).not.toHaveBeenCalled();
         });
     });
+
+    describe('perfMarks', () => {
+        let markSpy: MockInstance;
+        let measureSpy: MockInstance;
+        let clearMarksSpy: MockInstance;
+        let getEntriesByNameSpy: MockInstance;
+        let originalMark: typeof performance.mark;
+        let originalMeasure: typeof performance.measure;
+        let originalClearMarks: typeof performance.clearMarks;
+        let originalGetEntriesByName: typeof performance.getEntriesByName;
+        // Models the User Timing buffer so the getEntriesByName guard behaves as
+        // it would against real marks: mark() adds, clearMarks() removes.
+        let liveMarks: Set<string>;
+
+        beforeEach(() => {
+            liveMarks = new Set();
+            originalMark = performance.mark;
+            originalMeasure = performance.measure;
+            originalClearMarks = performance.clearMarks;
+            originalGetEntriesByName = performance.getEntriesByName;
+
+            markSpy = vi.fn((name: string) => {
+                liveMarks.add(name);
+            });
+            measureSpy = vi.fn();
+            clearMarksSpy = vi.fn((name?: string) => {
+                if (name === undefined) liveMarks.clear();
+                else liveMarks.delete(name);
+            });
+            getEntriesByNameSpy = vi.fn((name: string, type?: string) =>
+                type === 'mark' && liveMarks.has(name) ? [{ name }] : [],
+            );
+
+            performance.mark = markSpy as unknown as typeof performance.mark;
+            performance.measure = measureSpy as unknown as typeof performance.measure;
+            performance.clearMarks = clearMarksSpy as unknown as typeof performance.clearMarks;
+            performance.getEntriesByName =
+                getEntriesByNameSpy as unknown as typeof performance.getEntriesByName;
+        });
+
+        afterEach(() => {
+            performance.mark = originalMark;
+            performance.measure = originalMeasure;
+            performance.clearMarks = originalClearMarks;
+            performance.getEntriesByName = originalGetEntriesByName;
+        });
+
+        it('should not touch mark or measure by default', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
+            log.tfi('fn');
+            log.tfo('fn');
+            await log.tfa('op', Promise.resolve(1));
+
+            expect(markSpy).not.toHaveBeenCalled();
+            expect(measureSpy).not.toHaveBeenCalled();
+        });
+
+        it('should mark on tfi and measure on tfo, consuming the matching start mark', () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true, perfMarks: true });
+            log.tfi('doWork');
+            log.tfo('doWork');
+
+            expect(markSpy).toHaveBeenCalledTimes(1);
+            const startMark = markSpy.mock.calls[0][0];
+
+            expect(measureSpy).toHaveBeenCalledTimes(1);
+            const [measureName, measureOptions] = measureSpy.mock.calls[0];
+            expect(measureName).toBe('vittra: doWork');
+            expect(measureOptions.start).toBe(startMark);
+            expect(clearMarksSpy).toHaveBeenCalledWith(startMark);
+        });
+
+        it('should give recursive same-name frames two measures with distinct start marks', () => {
+            log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
+            log.tfi('f');
+            log.tfi('f');
+            log.tfo('f');
+            log.tfo('f');
+
+            expect(measureSpy).toHaveBeenCalledTimes(2);
+            const [name1, opts1] = measureSpy.mock.calls[0];
+            const [name2, opts2] = measureSpy.mock.calls[1];
+            expect(name1).toBe('vittra: f');
+            expect(name2).toBe('vittra: f');
+            expect(opts1.start).not.toBe(opts2.start);
+        });
+
+        it('should measure a tfa operation once with opId and status detail', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true, perfMarks: true });
+            await log.tfa('loadThing', Promise.resolve(42));
+
+            const opMeasures = measureSpy.mock.calls.filter(([n]) => n === 'vittra: loadThing #1');
+            expect(opMeasures).toHaveLength(1);
+            const options = opMeasures[0][1];
+            expect(options.start).toBe('vittra-op-1');
+            expect(options.detail.opId).toBe(1);
+            expect(options.detail.status).toBe('done');
+        });
+
+        it('should measure nested tfa children once each', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
+            await log.tfa('parent', async (t) => {
+                await t.tfa('child', async () => {});
+            });
+
+            const names = measureSpy.mock.calls.map(([n]) => n);
+            expect(names.filter((n) => n === 'vittra: parent #1')).toHaveLength(1);
+            expect(names.filter((n) => n === 'vittra: child #2')).toHaveLength(1);
+        });
+
+        it('should clear auto-closed frame marks without measuring them', () => {
+            log = new Vittra({ banner: false, logLevel: 2, perfMarks: true });
+            log.tfi('outer');
+            log.tfi('inner');
+            log.tfo('outer'); // inner is auto-closed
+
+            const innerMark = markSpy.mock.calls[1][0];
+            const measuredStarts = measureSpy.mock.calls.map(([, opts]) => opts.start);
+            expect(measuredStarts).not.toContain(innerMark);
+            expect(clearMarksSpy).toHaveBeenCalledWith(innerMark);
+
+            expect(measureSpy.mock.calls.filter(([n]) => n === 'vittra: outer')).toHaveLength(1);
+            expect(measureSpy.mock.calls.filter(([n]) => n === 'vittra: inner')).toHaveLength(0);
+        });
+
+        it('should do nothing at level 0 without blackBox', () => {
+            log = new Vittra({ banner: false, logLevel: 0, perfMarks: true });
+            log.tfi('fn');
+            log.tfo('fn');
+
+            expect(markSpy).not.toHaveBeenCalled();
+            expect(measureSpy).not.toHaveBeenCalled();
+        });
+    });
 });

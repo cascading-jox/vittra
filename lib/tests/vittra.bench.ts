@@ -44,6 +44,8 @@ const blackBox = new Vittra({ banner: false, logLevel: 0, logTime: true, blackBo
 const withHook = new Vittra({ banner: false, logLevel: 2, logTime: true, onEntry: noop });
 // Level 2 with buffering disabled to isolate the ring-push cost of the default.
 const noBuffer = new Vittra({ banner: false, logLevel: 2, logTime: true, bufferSize: 0 });
+// Level 2 emitting real User Timing spans, to price the mark/measure path.
+const perfMarks = new Vittra({ banner: false, logLevel: 2, logTime: true, perfMarks: true });
 
 // --- disabled path: every trace call must early-return in nanoseconds ---
 
@@ -86,6 +88,28 @@ bench('level 0 blackBox: tf with small object', () => {
 
 bench('level 0 blackBox: tf with large object', () => {
     blackBox.tf(largeObject);
+});
+
+// --- perfMarks: real performance.mark/measure emitted from emit() ---
+
+// LANDMINE: every measured iteration leaves one real performance.measure in the
+// User Timing buffer (tfo clears its start mark but the measure is kept — that
+// is the artifact). Across a bench's iterations those measures accumulate
+// unbounded (~66 MB per 200k) and can OOM. vitest builds the tinybench Task
+// directly and forwards no per-iteration hook, so there is no hook to clear
+// from outside the fn; instead the fn drains the buffer every 4096 iterations.
+// Cost to honesty: each iteration carries an extra counter increment + bitmask
+// compare (~1-2 ns) plus an amortized clearMeasures (a few thousand entries
+// cleared once per 4096 calls, sub-nanosecond amortized). The reported number
+// therefore slightly OVERSTATES the library's true perfMarks overhead by that
+// small constant; a real app pays the mark+measure but never this drain.
+let perfMarkBenchCounter = 0;
+bench('level 2 + perfMarks: tfi/tfo pair', () => {
+    perfMarks.tfi('fn', smallObject);
+    perfMarks.tfo('fn', smallObject);
+    if ((++perfMarkBenchCounter & 4095) === 0) {
+        performance.clearMeasures();
+    }
 });
 
 // --- capture consumers: onEntry hook cost, and buffer-push cost in isolation ---

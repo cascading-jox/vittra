@@ -64,6 +64,24 @@ export interface VittraOptions {
      * skipped where addEventListener is unavailable.
      */
     dumpOnError?: boolean;
+    /**
+     * Emit User Timing spans for traced functions and async operations so they
+     * surface in the DevTools Performance profiler alongside frames and network
+     * activity. Each tfi/tfo pair becomes a `performance.measure` named
+     * `vittra: <func>`, and each tfa/tfia/tfoa operation one named
+     * `vittra: <func> #<opId>`, spanning entry to exit; the start marks are
+     * cleared once consumed. Default false.
+     *
+     * When off, emit pays a single flag check — the disabled path is untouched.
+     * When on, every emitted entry costs one mark or measure call, wrapped in
+     * try/catch behind a one-time feature check so engines without the User
+     * Timing options form silently skip it.
+     *
+     * The measures are deliberately left in the User Timing buffer — they are
+     * the artifact you inspect — so spans accumulate for the duration of the
+     * session. Enable this while profiling, not permanently in production.
+     */
+    perfMarks?: boolean;
 }
 
 /**
@@ -121,8 +139,10 @@ type LogEntry =
           withType?: boolean;
       }
     | { kind: 'table'; data: Record<string, unknown> | Array<unknown>; properties?: string[] }
-    | { kind: 'funcEntry'; func: string; values: unknown[] }
-    | { kind: 'funcExit'; func: string; values: unknown[]; duration?: number }
+    // markName: the unique User Timing start mark for this frame, present only
+    // while perfMarks is on so emit can pair the entry mark with the exit measure
+    | { kind: 'funcEntry'; func: string; values: unknown[]; markName?: string }
+    | { kind: 'funcExit'; func: string; values: unknown[]; duration?: number; markName?: string }
     | { kind: 'groupEnd' }
     | { kind: 'asyncStart'; func: string; opId: number; args?: unknown[] }
     | { kind: 'asyncEnd'; func: string; opId: number; values: unknown[]; duration?: number }
@@ -331,6 +351,12 @@ export class Vittra {
     private bufferWriteIndex: number = 0;
     /** Number of valid entries (caps at bufferSize once the ring has wrapped) */
     private bufferCount: number = 0;
+    /** Emit User Timing marks/measures from emit() so traces show in the profiler */
+    private perfMarks: boolean;
+    /** Parallel to functionStack: the unique start-mark name of each open frame */
+    private markNameStack: string[] = [];
+    /** Monotonic source of unique function span mark names (perfMarks only) */
+    private perfMarkCounter: number = 0;
 
     constructor(options: VittraOptions = {}) {
         // URL parameter overrides the option; an omitted option falls back to a persisted level
@@ -344,6 +370,13 @@ export class Vittra {
 
         this.blackBox = options.blackBox === true;
         this.onEntry = options.onEntry;
+        // One-time feature check: an engine lacking the User Timing options form
+        // disables perf integration entirely, so emit's hot path never probes it
+        this.perfMarks =
+            options.perfMarks === true &&
+            typeof performance !== 'undefined' &&
+            typeof performance.mark === 'function' &&
+            typeof performance.measure === 'function';
         // Any non-positive or non-finite size disables buffering
         const requestedSize = options.bufferSize;
         this.bufferSize =
@@ -500,11 +533,96 @@ export class Vittra {
     private emit(entry: LogEntry, options: { print?: boolean; capture?: boolean } = {}): void {
         const print = options.print ?? true;
         const capture = options.capture ?? true;
+        // Fire spans for every entry that reaches emit — printed, captured, or
+        // both — so black-boxed traces still profile. A single flag when off.
+        if (this.perfMarks) {
+            this.applyPerfMark(entry);
+        }
         if (capture) {
             this.capture(entry, print);
         }
         if (print) {
             this.printEntry(entry);
+        }
+    }
+
+    /**
+     * Turn an entry into User Timing activity: funcEntry/asyncStart open a span
+     * (a mark), funcExit/asyncEnd/asyncComplete close it (a measure that clears
+     * its start mark). Every other kind is span-less. All perf calls are
+     * best-effort and swallow failures — logging must never break on them.
+     */
+    private applyPerfMark(entry: LogEntry): void {
+        switch (entry.kind) {
+            case 'funcEntry':
+                if (entry.markName !== undefined) {
+                    try {
+                        performance.mark(entry.markName);
+                    } catch {
+                        // Perf integration is best-effort
+                    }
+                }
+                break;
+            case 'funcExit':
+                if (entry.markName !== undefined) {
+                    this.measureFunc(entry.func, entry.markName);
+                }
+                break;
+            case 'asyncStart':
+                this.markOpStart(entry.opId);
+                break;
+            case 'asyncEnd':
+                this.measureOp(entry.func, entry.opId, { opId: entry.opId });
+                break;
+            case 'asyncComplete':
+                this.measureOp(entry.func, entry.opId, {
+                    opId: entry.opId,
+                    status: entry.status,
+                    parent: entry.badgeParent,
+                });
+                break;
+            // log, table, groupEnd, asyncPending, opError carry no span
+        }
+    }
+
+    /** Open the span for an async operation at its start (mark name is opId-unique) */
+    private markOpStart(opId: number): void {
+        try {
+            performance.mark(`vittra-op-${opId}`);
+        } catch {
+            // Perf integration is best-effort
+        }
+    }
+
+    /**
+     * Close a function span: measure from its start mark, then clear the mark.
+     * The measure name repeats across recursive frames by design; only the
+     * unique start mark keeps their spans from colliding.
+     */
+    private measureFunc(func: string, markName: string): void {
+        try {
+            performance.measure(`vittra: ${func}`, { start: markName });
+            performance.clearMarks(markName);
+        } catch {
+            // Older engines lack the options form of measure — skip silently
+        }
+    }
+
+    /**
+     * Close an async-operation span. Measures only when the start mark still
+     * exists, so an op whose mark was already consumed (a replay re-visiting it)
+     * produces no second measure rather than relying on a thrown duplicate.
+     */
+    private measureOp(func: string, opId: number, detail: Record<string, unknown>): void {
+        const markName = `vittra-op-${opId}`;
+        try {
+            if (performance.getEntriesByName(markName, 'mark').length === 0) {
+                return;
+            }
+            performance.measure(`vittra: ${func} #${opId}`, { start: markName, detail });
+            performance.clearMarks(markName);
+        } catch {
+            // Older engines lack the options form of measure — skip silently
         }
     }
 
@@ -850,6 +968,11 @@ export class Vittra {
         const parent = parentId !== null ? this.asyncOps.get(parentId) : undefined;
         if (parent && parent.status === 'pending') {
             parent.buffer.push({ kind: 'child', childId: opId });
+            // Inline children never emit asyncStart (their entry is drawn at the
+            // parent's replay), so open their span here where the op truly starts
+            if (this.perfMarks) {
+                this.markOpStart(opId);
+            }
         } else {
             op.parent = null;
             this.emit({ kind: 'asyncStart', func, opId });
@@ -1087,7 +1210,18 @@ export class Vittra {
             this.timers.push(performance.now());
         }
 
-        this.emit({ kind: 'funcEntry', func, values: this.snapshot(callerArgs) }, { print });
+        // A per-call unique mark name keeps recursive/same-name frames distinct;
+        // the parallel stack lets tfo reclaim this frame's name in lockstep
+        let markName: string | undefined;
+        if (this.perfMarks) {
+            markName = `vittra-fn-${++this.perfMarkCounter}`;
+            this.markNameStack.push(markName);
+        }
+
+        this.emit(
+            { kind: 'funcEntry', func, values: this.snapshot(callerArgs), markName },
+            { print },
+        );
     }
 
     /**
@@ -1126,6 +1260,17 @@ export class Vittra {
                 if (this.logTime === true && this.timers.length > 0) {
                     this.timers.pop();
                 }
+                // Auto-closed frames get no measure — discard their start mark
+                if (this.perfMarks && this.markNameStack.length > 0) {
+                    const orphanMark = this.markNameStack.pop();
+                    if (orphanMark !== undefined) {
+                        try {
+                            performance.clearMarks(orphanMark);
+                        } catch {
+                            // Perf integration is best-effort
+                        }
+                    }
+                }
                 // Auto-close is presentation-only: print the group close, never capture
                 this.emit({ kind: 'groupEnd' }, { print, capture: false });
             }
@@ -1136,6 +1281,8 @@ export class Vittra {
 
         // Remove function from stack
         this.functionStack.pop();
+        // Reclaim this frame's start mark (in lockstep with functionStack)
+        const markName = this.perfMarks ? this.markNameStack.pop() : undefined;
 
         let duration: number | undefined;
         if (this.logTime === true && this.timers.length > 0) {
@@ -1146,7 +1293,7 @@ export class Vittra {
         }
 
         this.emit(
-            { kind: 'funcExit', func, values: this.snapshot(returnValues), duration },
+            { kind: 'funcExit', func, values: this.snapshot(returnValues), duration, markName },
             { print },
         );
     }
@@ -1237,7 +1384,26 @@ export class Vittra {
         for (let i = 0; i < this.functionStack.length; i++) {
             this.emit({ kind: 'groupEnd' }, { print: closeGroups, capture: false });
         }
+        // Drop the start marks of every frame and op left open, so a reset does
+        // not leak stranded marks into the User Timing buffer
+        if (this.perfMarks) {
+            for (const markName of this.markNameStack) {
+                try {
+                    performance.clearMarks(markName);
+                } catch {
+                    // Perf integration is best-effort
+                }
+            }
+            for (const opId of this.asyncOps.keys()) {
+                try {
+                    performance.clearMarks(`vittra-op-${opId}`);
+                } catch {
+                    // Perf integration is best-effort
+                }
+            }
+        }
         this.functionStack = [];
+        this.markNameStack = [];
         this.timers = [];
         this.asyncOps.clear();
         this.completedOps = [];
