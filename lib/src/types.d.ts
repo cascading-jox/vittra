@@ -316,3 +316,6 @@ export declare class Vittra {
      */
     checkUnclosedFunctions(): boolean;
 }
+
+/** @internal Reset all module-level state to pristine — for tests only. */
+export declare function _resetVittraModuleState(): void;

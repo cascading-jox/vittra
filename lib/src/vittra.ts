@@ -361,6 +361,27 @@ const registry: Vittra[] = [];
 /** The spec set by Vittra.setLogLevel this session; consulted by new instances */
 let runtimeSpec: LevelSpec | null = null;
 
+/**
+ * Monotonic source of async operation ids, shared across every instance so a
+ * given #<id> is unique console-wide. An instance's reset() never rewinds it —
+ * only _resetVittraModuleState does, for tests.
+ */
+let nextAsyncId = 1;
+
+/**
+ * Set once the first eligible instance prints its startup banner, so the banner
+ * shows at most once per page load regardless of how many instances exist.
+ */
+let bannerPrinted = false;
+
+/** @internal Reset all module-level state to pristine — for tests only. */
+export function _resetVittraModuleState(): void {
+    nextAsyncId = 1;
+    bannerPrinted = false;
+    runtimeSpec = null;
+    registry.length = 0;
+}
+
 /** Library version — updated by release automation */
 const VITTRA_VERSION = '0.5.0'; // x-release-please-version
 
@@ -476,7 +497,6 @@ export class Vittra {
     private functionStack: FunctionFrame[] = []; // Track function entries
     private asyncOps: Map<number, AsyncOp> = new Map();
     private completedOps: CompletedOp[] = [];
-    private nextAsyncId: number = 1;
     /** Ops in their synchronous start phase — parents for nested tfa calls */
     private currentOpStack: number[] = [];
     /** Capture everything printable at level 2 even while the level suppresses printing */
@@ -574,10 +594,14 @@ export class Vittra {
         // Register so Vittra.setLogLevel can reach this instance later
         registry.push(this);
 
-        // Per-instance banner (prints once per eligible instance). A named
-        // instance shows its badge in the banner text.
-        if (this.logLevel >= 1 && options.banner !== false) {
+        // Startup banner, once per page load: the first eligible instance
+        // (level >= 1, banner not suppressed) prints it and claims the flag;
+        // later instances stay silent. A banner: false instance never prints
+        // and never claims the flag, so a later eligible instance still shows
+        // it. A named instance shows its badge in the banner text.
+        if (this.logLevel >= 1 && options.banner !== false && !bannerPrinted) {
             printBanner(this.logLevel, levelSource, this.name);
+            bannerPrinted = true;
         }
     }
 
@@ -1148,7 +1172,7 @@ export class Vittra {
      * ```
      */
     tfia(func: string, ...args: unknown[]): number {
-        const opId = this.nextAsyncId++;
+        const opId = nextAsyncId++;
         const print = this.logLevel >= 2;
         if (!print && !this.blackBox) return opId;
 
@@ -1277,7 +1301,7 @@ export class Vittra {
             return Promise.resolve(fnOrPromise);
         }
 
-        const opId = this.nextAsyncId++;
+        const opId = nextAsyncId++;
         const op: AsyncOp = {
             id: opId,
             func,

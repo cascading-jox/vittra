@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { Vittra, VittraOptions } from '../src/vittra';
+import { Vittra, VittraOptions, _resetVittraModuleState } from '../src/vittra';
 import type { VittraLogEntry } from '../src/vittra';
 
 describe('Vittra', () => {
@@ -31,6 +31,9 @@ describe('Vittra', () => {
     }
 
     beforeEach(() => {
+        // Every test starts from pristine module state: shared op-id counter,
+        // banner flag, runtime spec, and instance registry all reset.
+        _resetVittraModuleState();
         setupSpies();
         vi.clearAllMocks();
         log = new Vittra({ banner: false, logLevel: 2, logTime: true });
@@ -367,6 +370,18 @@ describe('Vittra', () => {
                 'font-weight: bold',
                 `Warning: tfoa called for 'asyncOp2' (ID: ${opId}) but no matching tfia found`,
             );
+        });
+    });
+
+    describe('shared async id counter', () => {
+        it('should number ops sequentially across separate instances', () => {
+            const api = new Vittra({ name: 'api', banner: false, logLevel: 2 });
+            const ui = new Vittra({ name: 'ui', banner: false, logLevel: 2 });
+
+            // The counter lives at module scope, so ids are unique console-wide:
+            // ui's first op continues api's sequence rather than restarting at 1.
+            expect(api.tfia('apiOp')).toBe(1);
+            expect(ui.tfia('uiOp')).toBe(2);
         });
     });
 
@@ -835,6 +850,23 @@ describe('Vittra', () => {
             log = new Vittra({ banner: false, logLevel: 2 });
 
             expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
+        it('should print the banner only once across several eligible instances', () => {
+            new Vittra({ logLevel: 2 });
+            new Vittra({ logLevel: 2 });
+            new Vittra({ logLevel: 1 });
+
+            expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('should not let a banner: false instance consume the once-per-page flag', () => {
+            new Vittra({ banner: false, logLevel: 2 });
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+
+            // The flag was never claimed, so the next eligible instance prints
+            new Vittra({ logLevel: 2 });
+            expect(consoleLogSpy).toHaveBeenCalledTimes(1);
         });
     });
 
@@ -1348,12 +1380,6 @@ describe('Vittra', () => {
     });
 
     describe('namespaces: static setLogLevel', () => {
-        // Each test sets the module-level runtime spec; neutralize it afterward
-        // so it does not silently drive instances constructed by later describes.
-        afterEach(() => {
-            Vittra.setLogLevel(0);
-        });
-
         it('should apply per-namespace levels to registered instances', () => {
             const api = new Vittra({ name: 'api', banner: false });
             const ui = new Vittra({ name: 'ui', banner: false });
@@ -1471,12 +1497,6 @@ describe('Vittra', () => {
     });
 
     describe('namespaces: level spec via URL', () => {
-        beforeEach(() => {
-            // Neutralize any runtime spec left by earlier tests so an instance
-            // the URL spec does not cover deterministically resolves to 0.
-            Vittra.setLogLevel(0);
-        });
-
         afterEach(() => {
             window.history.replaceState(null, '', '/');
         });
@@ -1721,8 +1741,6 @@ describe('Vittra', () => {
         });
 
         afterEach(() => {
-            // Neutralize the runtime spec this test set, then drop the stub
-            Vittra.setLogLevel(0);
             vi.unstubAllGlobals();
         });
 
