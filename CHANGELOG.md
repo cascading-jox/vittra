@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0](https://github.com/cascading-jox/vittra/compare/v0.5.0...v0.6.0) (2026-07-12)
+
+
+### Features
+
+* ignore-list vittra in shipped source maps ([1ac194c](https://github.com/cascading-jox/vittra/commit/1ac194c7a11eddece4e59c001c5e86486da23f91))
+* named instances with per-namespace log level specs ([9208e0b](https://github.com/cascading-jox/vittra/commit/9208e0bf21eea641cf59152f1ccb62765ef13e17))
+* perfMarks option surfacing traces in the DevTools Performance timeline ([9645a9d](https://github.com/cascading-jox/vittra/commit/9645a9d8124196b1a77f779d57903e4bd9c4a89c))
+* ring buffer with dump(), onEntry hook, dumpOnError, and blackBox capture ([f786998](https://github.com/cascading-jox/vittra/commit/f786998adae324a9e5ef6b62f6eb3ca9dad9ac10))
+* share async operation ids across all instances ([61de949](https://github.com/cascading-jox/vittra/commit/61de94974d0cd0e287aecd6e250ce0c32eefc86d))
+
+
+### Bug Fixes
+
+* apply a runtime level spec to instances constructed after it is set ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* close only console groups that actually printed ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* defer download blob URL revocation until the save completes ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* drop empty trailing argument from console calls when logTime is off ([f02ca46](https://github.com/cascading-jox/vittra/commit/f02ca4695e426af24e81feb753052b50302a07c6))
+* embed source text in the published source map ([1ac194c](https://github.com/cascading-jox/vittra/commit/1ac194c7a11eddece4e59c001c5e86486da23f91))
+* end perfMarks spans for nested operations at their completion ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* evict the oldest orphaned tfia operation past a pending cap ([f02ca46](https://github.com/cascading-jox/vittra/commit/f02ca4695e426af24e81feb753052b50302a07c6))
+* make dump() crash-proof against unstringifiable and circular values ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* persist explicit zero levels so wildcards cannot re-enable logging ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+* print the startup banner once per page load ([61de949](https://github.com/cascading-jox/vittra/commit/61de94974d0cd0e287aecd6e250ce0c32eefc86d))
+* separate logWithType format specifiers with spaces ([f02ca46](https://github.com/cascading-jox/vittra/commit/f02ca4695e426af24e81feb753052b50302a07c6))
+* snapshot table data at capture time ([00ab38a](https://github.com/cascading-jox/vittra/commit/00ab38aadda39c1116ab74cdf2bde3c859102353))
+
+
+### Miscellaneous Chores
+
+* **demo:** rebuild the demo as a feature playground ([42844a8](https://github.com/cascading-jox/vittra/commit/42844a87a6484ba6dc1beb7dc3d930d775bd6eec))
+
+
+### Code Refactoring
+
+* remove unreachable branches in tfi, tfo, and logToConsole ([f02ca46](https://github.com/cascading-jox/vittra/commit/f02ca4695e426af24e81feb753052b50302a07c6))
+* route all trace output through one emit/print path ([88f3e0f](https://github.com/cascading-jox/vittra/commit/88f3e0fb92e0fee9f73acd887752af340acf6cb3))
+
+
+### Build System
+
+* add per-call benchmark suite and attw published-types check ([37d0033](https://github.com/cascading-jox/vittra/commit/37d0033e24508a88fceaf7f91c816614d1516234))
+
 ## [0.5.0](https://github.com/cascading-jox/vittra/compare/v0.4.0...v0.5.0) (2026-07-10)
 
 
