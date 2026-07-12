@@ -55,6 +55,41 @@ interface BufferedChild {
 
 type BufferedEntry = BufferedLog | BufferedTable | BufferedChild;
 
+/**
+ * One unit of trace content in raw form. Every gated logging path emits one of
+ * these; printEntry() is the sole place that turns them into console output.
+ * Values are already snapshotted; timing is carried as raw deltas and durations
+ * that printEntry formats.
+ */
+type LogEntry =
+    | {
+          kind: 'log';
+          level: 'log' | 'clean' | 'warn' | 'error';
+          values: unknown[];
+          /** Δ-since-last-timer to display; absent means no time suffix */
+          delta?: number;
+          /** Apply logWithType %o specifiers; live logs only */
+          withType?: boolean;
+      }
+    | { kind: 'table'; data: Record<string, unknown> | Array<unknown>; properties?: string[] }
+    | { kind: 'funcEntry'; func: string; values: unknown[] }
+    | { kind: 'funcExit'; func: string; values: unknown[]; duration?: number }
+    | { kind: 'groupEnd' }
+    | { kind: 'asyncStart'; func: string; opId: number; args?: unknown[] }
+    | { kind: 'asyncEnd'; func: string; opId: number; values: unknown[]; duration?: number }
+    | {
+          kind: 'asyncComplete';
+          func: string;
+          opId: number;
+          status: 'done' | 'failed';
+          values: unknown[];
+          /** Parent id for the ←#n back-reference on a standalone replayed child */
+          badgeParent?: number;
+          duration?: number;
+      }
+    | { kind: 'asyncPending'; func: string; opId: number }
+    | { kind: 'opError'; error: unknown };
+
 interface AsyncOp {
     id: number;
     func: string;
@@ -332,42 +367,141 @@ export class Vittra {
     }
 
     /**
-     * Internal method to handle different types of console output
+     * Translate a live tf/tfc/tfw/tfe call into an emitted log entry.
      */
     private logToConsole(mode: 'tf' | 'tfc' | 'tfw' | 'tfe', valuesToLog: unknown[]): void {
         // Level 1 shows warnings and errors only; plain logs need level 2
         const requiredLevel = mode === 'tfw' || mode === 'tfe' ? 1 : 2;
         if (this.logLevel < requiredLevel) return;
 
-        const objectClone = this.snapshot(valuesToLog);
+        const level =
+            mode === 'tfc' ? 'clean' : mode === 'tfw' ? 'warn' : mode === 'tfe' ? 'error' : 'log';
+        let delta: number | undefined;
         const lastTimer = this.timers[this.timers.length - 1];
-        const timeSuffix: unknown[] = [];
-
         if (this.logTime && typeof lastTimer === 'number') {
-            const delta = performance.now() - lastTimer;
-            timeSuffix.push(`  [Δ ${this.formatTime(delta)}]`);
+            delta = performance.now() - lastTimer;
         }
+        this.emit({
+            kind: 'log',
+            level,
+            values: this.snapshot(valuesToLog),
+            delta,
+            withType: this.logWithType,
+        });
+    }
 
-        let nOs = '';
-        if (this.logWithType === true) {
-            // Space-separated %o specifiers so multiple values render apart,
-            // matching how the console spaces native arguments
-            nOs = objectClone.map(() => '%o').join(' ');
-        }
+    /**
+     * The one ingress for trace content. Every gated logging path funnels its
+     * raw entry through here; later stages hang consumers (ring buffer, hooks,
+     * dump) off this single choke point.
+     */
+    private emit(entry: LogEntry): void {
+        this.printEntry(entry);
+    }
 
-        switch (mode) {
-            case 'tfc':
-                console.log(`%c${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
+    /**
+     * The one egress for trace content: the sole method that touches console.*
+     * and the group-indentation stack. It owns all presentation — prefixes, op
+     * colors, comma interspersing, %o type specifiers, and time suffixes.
+     */
+    private printEntry(entry: LogEntry): void {
+        switch (entry.kind) {
+            case 'log': {
+                const prefix = entry.level === 'clean' ? '' : '+ ';
+                // Space-separated %o specifiers so multiple values render apart,
+                // matching how the console spaces native arguments
+                const nOs = entry.withType ? entry.values.map(() => '%o').join(' ') : '';
+                const timeSuffix =
+                    entry.delta !== undefined ? [`  [Δ ${this.formatTime(entry.delta)}]`] : [];
+                const format = `%c${prefix}${nOs}`;
+                if (entry.level === 'warn') {
+                    console.warn(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                } else if (entry.level === 'error') {
+                    console.error(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                } else {
+                    console.log(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                }
                 break;
-            case 'tfw':
-                console.warn(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
+            }
+            case 'table':
+                console.table(entry.data, entry.properties);
                 break;
-            case 'tfe':
-                console.error(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
+            case 'funcEntry':
+                console.group(
+                    `%c--> ${entry.func}(`,
+                    this.boldStyle,
+                    ...intersperseCommas(entry.values),
+                    ')',
+                );
                 break;
-            case 'tf':
-            default:
-                console.log(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
+            case 'funcExit': {
+                console.groupEnd();
+                const runtime =
+                    entry.duration !== undefined ? `[${this.formatTime(entry.duration)}]` : '';
+                if (entry.values.length > 0) {
+                    console.log(
+                        `%c<-- ${entry.func} ${runtime} =`,
+                        this.boldStyle,
+                        ...intersperseCommas(entry.values),
+                    );
+                } else {
+                    console.log(`%c<-- ${entry.func} ${runtime}`, this.boldStyle);
+                }
+                break;
+            }
+            case 'groupEnd':
+                console.groupEnd();
+                break;
+            case 'asyncStart': {
+                const style = this.opStyle(entry.opId);
+                if (entry.args === undefined) {
+                    console.log(`%c⟳ ${entry.func} #${entry.opId}`, style);
+                } else if (entry.args.length > 0) {
+                    console.log(
+                        `%c⟳ ${entry.func} #${entry.opId} (`,
+                        style,
+                        ...intersperseCommas(entry.args),
+                        ')',
+                    );
+                } else {
+                    console.log(`%c⟳ ${entry.func} #${entry.opId} ()`, style);
+                }
+                break;
+            }
+            case 'asyncEnd': {
+                const style = this.opStyle(entry.opId);
+                const runtime =
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
+                if (entry.values.length > 0) {
+                    console.log(
+                        `%c✓ ${entry.func} #${entry.opId}${runtime} =`,
+                        style,
+                        ...intersperseCommas(entry.values),
+                    );
+                } else {
+                    console.log(`%c✓ ${entry.func} #${entry.opId}${runtime}`, style);
+                }
+                break;
+            }
+            case 'asyncComplete': {
+                const style = this.opStyle(entry.opId);
+                const mark = entry.status === 'failed' ? '✗' : '✓';
+                const badge = entry.badgeParent !== undefined ? ` ←#${entry.badgeParent}` : '';
+                const runtime =
+                    entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
+                const header = `%c${mark} ${entry.func} #${entry.opId}${badge}${runtime}`;
+                if (entry.values.length > 0) {
+                    console.group(`${header} =`, style, ...entry.values);
+                } else {
+                    console.group(header, style);
+                }
+                break;
+            }
+            case 'asyncPending':
+                console.log(`%c⟳ ${entry.func} #${entry.opId} (pending)`, this.opStyle(entry.opId));
+                break;
+            case 'opError':
+                console.error(entry.error);
                 break;
         }
     }
@@ -427,13 +561,7 @@ export class Vittra {
         });
         this.evictOrphanedManualOps();
 
-        const style = this.opStyle(opId);
-        if (args.length > 0) {
-            const objectClone = this.snapshot(intersperseCommas(args));
-            console.log(`%c⟳ ${func} #${opId} (`, style, ...objectClone, ')');
-        } else {
-            console.log(`%c⟳ ${func} #${opId} ()`, style);
-        }
+        this.emit({ kind: 'asyncStart', func, opId, args: this.snapshot(args) });
 
         return opId;
     }
@@ -482,14 +610,13 @@ export class Vittra {
         }
 
         const duration = performance.now() - op.start;
-        const runTimeString = this.logTime ? ` [${this.formatTime(duration)}]` : '';
-        const style = this.opStyle(opId);
-        if (returnValues.length > 0) {
-            const objectClone = this.snapshot(intersperseCommas(returnValues));
-            console.log(`%c✓ ${func} #${opId}${runTimeString} =`, style, ...objectClone);
-        } else {
-            console.log(`%c✓ ${func} #${opId}${runTimeString}`, style);
-        }
+        this.emit({
+            kind: 'asyncEnd',
+            func,
+            opId,
+            values: this.snapshot(returnValues),
+            duration: this.logTime ? duration : undefined,
+        });
 
         this.recordCompleted(op, 'done', duration);
         this.asyncOps.delete(opId);
@@ -562,7 +689,7 @@ export class Vittra {
             parent.buffer.push({ kind: 'child', childId: opId });
         } else {
             op.parent = null;
-            console.log(`%c⟳ ${func} #${opId}`, this.opStyle(opId));
+            this.emit({ kind: 'asyncStart', func, opId });
         }
 
         let result: T | Promise<T>;
@@ -620,50 +747,41 @@ export class Vittra {
      * completed children inlined as nested blocks at their start position.
      */
     private replayOp(op: AsyncOp, standalone: boolean): void {
-        const style = this.opStyle(op.id);
-        const mark = op.status === 'failed' ? '✗' : '✓';
-        const badge = standalone && op.parent !== null ? ` ←#${op.parent}` : '';
-        const runTimeString =
-            this.logTime && op.duration !== undefined ? ` [${this.formatTime(op.duration)}]` : '';
-        const header = `%c${mark} ${op.func} #${op.id}${badge}${runTimeString}`;
-
-        if (op.resultValues.length > 0) {
-            console.group(`${header} =`, style, ...op.resultValues);
-        } else {
-            console.group(header, style);
-        }
+        this.emit({
+            kind: 'asyncComplete',
+            func: op.func,
+            opId: op.id,
+            status: op.status === 'failed' ? 'failed' : 'done',
+            values: op.resultValues,
+            badgeParent: standalone && op.parent !== null ? op.parent : undefined,
+            duration: this.logTime && op.duration !== undefined ? op.duration : undefined,
+        });
 
         for (const entry of op.buffer) {
             if (entry.kind === 'log') {
-                const timeSuffix: unknown[] = this.logTime
-                    ? [`  [Δ ${this.formatTime(entry.delta)}]`]
-                    : [];
-                if (entry.level === 'clean') {
-                    console.log('%c', this.boldStyle, ...entry.values, ...timeSuffix);
-                } else if (entry.level === 'warn') {
-                    console.warn('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
-                } else if (entry.level === 'error') {
-                    console.error('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
-                } else {
-                    console.log('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
-                }
+                this.emit({
+                    kind: 'log',
+                    level: entry.level,
+                    values: entry.values,
+                    delta: this.logTime ? entry.delta : undefined,
+                });
             } else if (entry.kind === 'table') {
-                console.table(entry.data, entry.properties);
+                this.emit({ kind: 'table', data: entry.data, properties: entry.properties });
             } else {
                 const child = this.asyncOps.get(entry.childId);
                 if (child && child.status !== 'pending') {
                     this.replayOp(child, false);
                     this.asyncOps.delete(child.id);
                 } else if (child) {
-                    console.log(`%c⟳ ${child.func} #${child.id} (pending)`, this.opStyle(child.id));
+                    this.emit({ kind: 'asyncPending', func: child.func, opId: child.id });
                 }
             }
         }
 
         if (op.status === 'failed' && op.error !== undefined) {
-            console.error(op.error);
+            this.emit({ kind: 'opError', error: op.error });
         }
-        console.groupEnd();
+        this.emit({ kind: 'groupEnd' });
     }
 
     private createOpLogger(op: AsyncOp): VittraOpLogger {
@@ -788,12 +906,7 @@ export class Vittra {
             this.timers.push(performance.now());
         }
 
-        if (callerArgs.length > 0) {
-            const objectClone = this.snapshot(intersperseCommas(callerArgs));
-            console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
-        } else {
-            console.group(`%c--> ${func}(`, this.boldStyle, ')');
-        }
+        this.emit({ kind: 'funcEntry', func, values: this.snapshot(callerArgs) });
     }
 
     /**
@@ -831,7 +944,7 @@ export class Vittra {
                 if (this.logTime === true && this.timers.length > 0) {
                     this.timers.pop();
                 }
-                console.groupEnd();
+                this.emit({ kind: 'groupEnd' });
             }
             this.tfw(
                 `Warning: Unexpected tfo call for '${func}'. Auto-closed unclosed functions: ${orphanedFunctions.join(', ')}`,
@@ -841,24 +954,15 @@ export class Vittra {
         // Remove function from stack
         this.functionStack.pop();
 
-        let runTimeString = '';
+        let duration: number | undefined;
         if (this.logTime === true && this.timers.length > 0) {
             const startTime = this.timers.pop();
             if (typeof startTime === 'number') {
-                const delta = performance.now() - startTime;
-                const runTime = this.formatTime(delta);
-                runTimeString = `[${runTime}]`;
+                duration = performance.now() - startTime;
             }
         }
 
-        if (returnValues.length > 0) {
-            const objectClone = this.snapshot(intersperseCommas(returnValues));
-            console.groupEnd();
-            console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
-        } else {
-            console.groupEnd();
-            console.log(`%c<-- ${func} ${runTimeString}`, this.boldStyle);
-        }
+        this.emit({ kind: 'funcExit', func, values: this.snapshot(returnValues), duration });
     }
 
     /**
@@ -931,7 +1035,7 @@ export class Vittra {
      */
     tft(tabularData: Record<string, unknown> | Array<unknown>, properties?: string[]): void {
         if (this.logLevel < 2) return;
-        console.table(tabularData, properties);
+        this.emit({ kind: 'table', data: tabularData, properties });
     }
 
     /**
@@ -941,7 +1045,7 @@ export class Vittra {
      */
     reset(): void {
         for (let i = 0; i < this.functionStack.length; i++) {
-            console.groupEnd();
+            this.emit({ kind: 'groupEnd' });
         }
         this.functionStack = [];
         this.timers = [];
