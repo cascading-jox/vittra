@@ -82,22 +82,12 @@ describe('Vittra', () => {
 
         it('should log basic message with tf', () => {
             log.tf('test message');
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c+ ',
-                'font-weight: bold',
-                'test message',
-                '',
-            );
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'test message');
         });
 
         it('should log clean message with tfc', () => {
             log.tfc('test message');
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c',
-                'font-weight: bold',
-                'test message',
-                '',
-            );
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c', 'font-weight: bold', 'test message');
         });
 
         it('should log warning with tfw', () => {
@@ -106,7 +96,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 'warning message',
-                '',
             );
         });
 
@@ -116,7 +105,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 'error message',
-                '',
             );
         });
 
@@ -207,7 +195,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 "Warning: Unexpected tfo call for 'outer'. Auto-closed unclosed functions: inner",
-                '',
             );
             expect(consoleGroupEndSpy).toHaveBeenCalledTimes(2);
             expect(log.checkUnclosedFunctions()).toBe(false);
@@ -221,7 +208,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 "Warning: tfo called for 'unknown' but no matching tfi found",
-                '',
             );
             expect(consoleGroupEndSpy).not.toHaveBeenCalled();
             expect(log.checkUnclosedFunctions()).toBe(true);
@@ -238,7 +224,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 'Warning: Unclosed functions detected: outer',
-                '',
             );
         });
     });
@@ -380,7 +365,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 `Warning: tfoa called for 'asyncOp2' (ID: ${opId}) but no matching tfia found`,
-                '',
             );
         });
     });
@@ -453,14 +437,14 @@ describe('Vittra', () => {
             const error = new Error('boom');
             log.tfe(error);
 
-            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', error, '');
+            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', error);
         });
 
         it('should not throw when logging a function value', () => {
             const fn = () => 42;
 
             expect(() => log.tf(fn)).not.toThrow();
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', fn, '');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', fn);
         });
 
         it('should not throw when structuredClone is unavailable', () => {
@@ -470,12 +454,7 @@ describe('Vittra', () => {
                 circular.self = circular;
 
                 expect(() => log.tf(circular)).not.toThrow();
-                expect(consoleLogSpy).toHaveBeenCalledWith(
-                    '%c+ ',
-                    'font-weight: bold',
-                    circular,
-                    '',
-                );
+                expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', circular);
             } finally {
                 vi.unstubAllGlobals();
             }
@@ -519,7 +498,7 @@ describe('Vittra', () => {
 
             log.setLogLevel(2);
             log.tf('visible');
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'visible', '');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'visible');
 
             log.setLogLevel(0);
             consoleLogSpy.mockClear();
@@ -540,12 +519,7 @@ describe('Vittra', () => {
 
             const nextLoad = new Vittra();
             nextLoad.tf('remembered');
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '%c+ ',
-                'font-weight: bold',
-                'remembered',
-                '',
-            );
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'remembered');
         });
 
         it('should clear the persisted level when persisting 0', () => {
@@ -581,7 +555,7 @@ describe('Vittra', () => {
             window.history.replaceState(null, '', '/?vittraLogLevel=2');
             log = new Vittra({ logLevel: 0 });
             log.tf('from url');
-            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'from url', '');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'from url');
         });
 
         it('should ignore a non-numeric URL parameter', () => {
@@ -629,8 +603,8 @@ describe('Vittra', () => {
             log.tfw('warned');
             log.tfe('failed');
 
-            expect(consoleWarnSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'warned', '');
-            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'failed', '');
+            expect(consoleWarnSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'warned');
+            expect(consoleErrorSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'failed');
         });
 
         it('should suppress logs, tables, and traces', () => {
@@ -686,6 +660,21 @@ describe('Vittra', () => {
                 '  [Δ 0.0 ms]',
             );
             expect(consoleGroupEndSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('should replay buffered logs without a time suffix when logTime is off', async () => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+
+            await log.tfa('fetchUser', async (t) => {
+                t.tf('got response');
+            });
+
+            expect(consoleLogSpy).toHaveBeenNthCalledWith(
+                2,
+                '%c+ ',
+                'font-weight: bold',
+                'got response',
+            );
         });
 
         it('should log a failure block and rethrow', async () => {
@@ -768,7 +757,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 'live line',
-                '',
             );
         });
     });
@@ -798,7 +786,6 @@ describe('Vittra', () => {
                 '%c+ ',
                 'font-weight: bold',
                 'Warning: Unclosed async operations detected: lost #1',
-                '',
             );
         });
 
@@ -832,6 +819,85 @@ describe('Vittra', () => {
             log = new Vittra({ banner: false, logLevel: 2 });
 
             expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('logWithType', () => {
+        beforeEach(() => {
+            log = new Vittra({ banner: false, logLevel: 2, logWithType: true });
+        });
+
+        it('should space-separate %o specifiers for multiple values', () => {
+            log.tf('a', 'b');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ %o %o', 'font-weight: bold', 'a', 'b');
+        });
+    });
+
+    describe('orphaned manual op eviction', () => {
+        beforeEach(() => {
+            log = new Vittra({ banner: false, logLevel: 2 });
+        });
+
+        it('should evict the oldest pending manual op past the limit with a warning', () => {
+            const firstOpId = log.tfia('firstOp');
+            for (let i = 0; i < 99; i++) {
+                log.tfia('filler');
+            }
+            consoleWarnSpy.mockClear();
+            log.tfia('trigger');
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                `Warning: evicting orphaned async operation firstOp #${firstOpId} after 100 pending manual operations without a matching tfoa`,
+            );
+        });
+
+        it('should warn about no matching tfia when tfoa arrives for an evicted op', () => {
+            const firstOpId = log.tfia('firstOp');
+            for (let i = 0; i < 100; i++) {
+                log.tfia('filler');
+            }
+            consoleWarnSpy.mockClear();
+            log.tfoa('firstOp', firstOpId);
+
+            expect(consoleWarnSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                `Warning: tfoa called for 'firstOp' (ID: ${firstOpId}) but no matching tfia found`,
+            );
+        });
+
+        it('should never evict a managed tfa operation', async () => {
+            log = new Vittra({ banner: false, logLevel: 2, logTime: true });
+            performanceNowSpy.mockReturnValue(1000);
+
+            let releaseOp!: () => void;
+            const gate = new Promise<void>((resolve) => {
+                releaseOp = resolve;
+            });
+            const opPromise = log.tfa('managedOp', async (t) => {
+                t.tf('inside op');
+                await gate;
+            });
+
+            for (let i = 0; i < 150; i++) {
+                log.tfia('flood');
+            }
+
+            releaseOp();
+            await opPromise;
+
+            expect(consoleGroupSpy).toHaveBeenCalledWith(
+                '%c✓ managedOp #1 [0.0 ms]',
+                'font-weight: bold; color: #e91e63',
+            );
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c+ ',
+                'font-weight: bold',
+                'inside op',
+                '  [Δ 0.0 ms]',
+            );
         });
     });
 });

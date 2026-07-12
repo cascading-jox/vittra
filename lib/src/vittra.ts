@@ -63,6 +63,8 @@ interface AsyncOp {
     buffer: BufferedEntry[];
     status: 'pending' | 'done' | 'failed';
     resultValues: unknown[];
+    /** True for ops started by the public tfia; managed tfa ops are false */
+    manual: boolean;
     error?: unknown;
     duration?: number;
 }
@@ -89,6 +91,9 @@ const OP_COLORS = [
 
 /** How many completed operations tfat() keeps for display */
 const COMPLETED_OPS_LIMIT = 50;
+
+/** How many pending manual (tfia) operations to keep before evicting the oldest */
+const MANUAL_OPS_LIMIT = 100;
 
 /** Name of both the URL parameter and the localStorage key for the log level */
 const LOG_LEVEL_KEY = 'vittraLogLevel';
@@ -336,50 +341,33 @@ export class Vittra {
 
         const objectClone = this.snapshot(valuesToLog);
         const lastTimer = this.timers[this.timers.length - 1];
-        let deltaString = '';
+        const timeSuffix: unknown[] = [];
 
         if (this.logTime && typeof lastTimer === 'number') {
             const delta = performance.now() - lastTimer;
-            const formattedTime = this.formatTime(delta);
-            deltaString = `  [Δ ${formattedTime}]`;
+            timeSuffix.push(`  [Δ ${this.formatTime(delta)}]`);
         }
 
         let nOs = '';
         if (this.logWithType === true) {
-            nOs = '%o'.repeat(objectClone.length);
+            // Space-separated %o specifiers so multiple values render apart,
+            // matching how the console spaces native arguments
+            nOs = objectClone.map(() => '%o').join(' ');
         }
-
-        const isSimpleType = typeof objectClone === 'number' || typeof objectClone === 'string';
 
         switch (mode) {
             case 'tfc':
-                if (isSimpleType) {
-                    console.log('%c', this.boldStyle, objectClone, deltaString);
-                } else {
-                    console.log(`%c${nOs}`, this.boldStyle, ...objectClone, deltaString);
-                }
+                console.log(`%c${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
                 break;
             case 'tfw':
-                if (isSimpleType) {
-                    console.warn('%c+ ', this.boldStyle, objectClone, deltaString);
-                } else {
-                    console.warn(`%c+ ${nOs}`, this.boldStyle, ...objectClone, deltaString);
-                }
+                console.warn(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
                 break;
             case 'tfe':
-                if (isSimpleType) {
-                    console.error('%c+ ', this.boldStyle, objectClone, deltaString);
-                } else {
-                    console.error(`%c+ ${nOs}`, this.boldStyle, ...objectClone, deltaString);
-                }
+                console.error(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
                 break;
             case 'tf':
             default:
-                if (isSimpleType) {
-                    console.log('%c+ ', this.boldStyle, objectClone, deltaString);
-                } else {
-                    console.log(`%c+ ${nOs}`, this.boldStyle, ...objectClone, deltaString);
-                }
+                console.log(`%c+ ${nOs}`, this.boldStyle, ...objectClone, ...timeSuffix);
                 break;
         }
     }
@@ -435,7 +423,9 @@ export class Vittra {
             buffer: [],
             status: 'pending',
             resultValues: [],
+            manual: true,
         });
+        this.evictOrphanedManualOps();
 
         const style = this.opStyle(opId);
         if (args.length > 0) {
@@ -562,6 +552,7 @@ export class Vittra {
             buffer: [],
             status: 'pending',
             resultValues: [],
+            manual: false,
         };
         this.asyncOps.set(opId, op);
 
@@ -644,15 +635,17 @@ export class Vittra {
 
         for (const entry of op.buffer) {
             if (entry.kind === 'log') {
-                const deltaString = this.logTime ? `  [Δ ${this.formatTime(entry.delta)}]` : '';
+                const timeSuffix: unknown[] = this.logTime
+                    ? [`  [Δ ${this.formatTime(entry.delta)}]`]
+                    : [];
                 if (entry.level === 'clean') {
-                    console.log('%c', this.boldStyle, ...entry.values, deltaString);
+                    console.log('%c', this.boldStyle, ...entry.values, ...timeSuffix);
                 } else if (entry.level === 'warn') {
-                    console.warn('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                    console.warn('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
                 } else if (entry.level === 'error') {
-                    console.error('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                    console.error('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
                 } else {
-                    console.log('%c+ ', this.boldStyle, ...entry.values, deltaString);
+                    console.log('%c+ ', this.boldStyle, ...entry.values, ...timeSuffix);
                 }
             } else if (entry.kind === 'table') {
                 console.table(entry.data, entry.properties);
@@ -731,6 +724,31 @@ export class Vittra {
         }
     }
 
+    /**
+     * Bound the pending-ops map against a tfia whose tfoa never arrives. Such an
+     * op would otherwise linger until reset(); once the pending manual count
+     * passes the cap the oldest is dropped, so a later tfoa for it hits the
+     * normal "no matching tfia" path. Managed tfa operations are never counted
+     * or evicted here.
+     */
+    private evictOrphanedManualOps(): void {
+        let pendingManual = 0;
+        let oldest: AsyncOp | undefined;
+        for (const op of this.asyncOps.values()) {
+            if (!op.manual || op.status !== 'pending') continue;
+            pendingManual++;
+            if (oldest === undefined) {
+                oldest = op;
+            }
+        }
+        if (pendingManual > MANUAL_OPS_LIMIT && oldest !== undefined) {
+            this.asyncOps.delete(oldest.id);
+            this.tfw(
+                `Warning: evicting orphaned async operation ${oldest.func} #${oldest.id} after ${MANUAL_OPS_LIMIT} pending manual operations without a matching tfoa`,
+            );
+        }
+    }
+
     private opStyle(opId: number): string {
         return `font-weight: bold; color: ${OP_COLORS[opId % OP_COLORS.length]}`;
     }
@@ -770,30 +788,9 @@ export class Vittra {
             this.timers.push(performance.now());
         }
 
-        const tmpArray: unknown[] = [];
-        if (callerArgs != null && callerArgs.length > 0) {
-            if (typeof callerArgs === 'number' || typeof callerArgs === 'string') {
-                tmpArray.push(callerArgs);
-            } else {
-                let i = 0;
-                for (const key in callerArgs) {
-                    if (Object.prototype.hasOwnProperty.call(callerArgs, key)) {
-                        const element = callerArgs[key];
-                        tmpArray.push(element);
-                        if (Object.keys(callerArgs).length - 1 !== i) {
-                            tmpArray.push(',');
-                        }
-                        ++i;
-                    }
-                }
-            }
-            const objectClone = this.snapshot(tmpArray);
-
-            if (objectClone.length === 0) {
-                console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
-            } else {
-                console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
-            }
+        if (callerArgs.length > 0) {
+            const objectClone = this.snapshot(intersperseCommas(callerArgs));
+            console.group(`%c--> ${func}(`, this.boldStyle, ...objectClone, ')');
         } else {
             console.group(`%c--> ${func}(`, this.boldStyle, ')');
         }
@@ -854,32 +851,10 @@ export class Vittra {
             }
         }
 
-        if (returnValues != null && Object.keys(returnValues).length !== 0) {
-            const tmpArray: unknown[] = [];
-            if (typeof returnValues === 'number' || typeof returnValues === 'string') {
-                tmpArray.push(returnValues);
-            } else {
-                let i = 0;
-                for (const key in returnValues) {
-                    if (Object.prototype.hasOwnProperty.call(returnValues, key)) {
-                        const element = returnValues[key];
-                        tmpArray.push(element);
-                        if (Object.keys(returnValues).length - 1 !== i) {
-                            tmpArray.push(',');
-                        }
-                        ++i;
-                    }
-                }
-            }
-
-            const objectClone = this.snapshot(tmpArray);
+        if (returnValues.length > 0) {
+            const objectClone = this.snapshot(intersperseCommas(returnValues));
             console.groupEnd();
-
-            if (objectClone.length === 0) {
-                console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
-            } else {
-                console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
-            }
+            console.log(`%c<-- ${func} ${runTimeString} =`, this.boldStyle, ...objectClone);
         } else {
             console.groupEnd();
             console.log(`%c<-- ${func} ${runTimeString}`, this.boldStyle);
