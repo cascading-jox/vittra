@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0](https://github.com/cascading-jox/vittra/compare/v0.6.0...v0.7.0) (2026-07-12)
+
+
+### Features
+
+* capture tfa operations in the black box below the print level ([8414dda](https://github.com/cascading-jox/vittra/commit/8414dda40be0b22ef05376f0f981e64b7d6f8323))
+* throttle option rate-limiting printed output ([8414dda](https://github.com/cascading-jox/vittra/commit/8414dda40be0b22ef05376f0f981e64b7d6f8323))
+
 ## [0.6.0](https://github.com/cascading-jox/vittra/compare/v0.5.0...v0.6.0) (2026-07-12)
 
 
