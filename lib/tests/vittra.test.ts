@@ -1272,4 +1272,206 @@ describe('Vittra', () => {
             expect(measureSpy).not.toHaveBeenCalled();
         });
     });
+
+    describe('namespaces: named badge', () => {
+        // djb2('api') % OP_COLORS.length === 7 → OP_COLORS[7]
+        const apiStyle = 'font-weight: bold; color: #795548';
+
+        beforeEach(() => {
+            log = new Vittra({ name: 'api', banner: false, logLevel: 2 });
+        });
+
+        it('should prefix tf output with a colored [api] badge', () => {
+            log.tf('hi');
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                '%c[api]%c+ ',
+                apiStyle,
+                'font-weight: bold',
+                'hi',
+            );
+        });
+
+        it('should prefix the tfi group with the badge', () => {
+            log.tfi('doThing', 'x');
+            expect(consoleGroupSpy).toHaveBeenCalledWith(
+                '%c[api]%c--> doThing(',
+                apiStyle,
+                'font-weight: bold',
+                'x',
+                ')',
+            );
+        });
+
+        it('should leave an unnamed instance byte-identical', () => {
+            const plain = new Vittra({ banner: false, logLevel: 2 });
+            plain.tf('hi');
+            expect(consoleLogSpy).toHaveBeenCalledWith('%c+ ', 'font-weight: bold', 'hi');
+        });
+    });
+
+    describe('namespaces: static setLogLevel', () => {
+        it('should apply per-namespace levels to registered instances', () => {
+            const api = new Vittra({ name: 'api', banner: false });
+            const ui = new Vittra({ name: 'ui', banner: false });
+            const other = new Vittra({ name: 'other', banner: false });
+
+            Vittra.setLogLevel('api:2,ui:1');
+            consoleLogSpy.mockClear();
+            consoleWarnSpy.mockClear();
+
+            api.tf('shown'); // level 2 → full trace
+            expect(consoleLogSpy).toHaveBeenCalled();
+
+            consoleLogSpy.mockClear();
+            ui.tf('suppressed'); // level 1 → plain logs need level 2
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            ui.tfw('warned'); // level 1 → warnings show
+            expect(consoleWarnSpy).toHaveBeenCalled();
+
+            consoleLogSpy.mockClear();
+            consoleWarnSpy.mockClear();
+            other.tf('nope'); // unmentioned → dropped to 0
+            other.tfw('nope'); // level 0 → not even warnings
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+        });
+
+        it('should apply the runtime spec to instances constructed afterward', () => {
+            Vittra.setLogLevel('api:2,ui:1');
+
+            const lateApi = new Vittra({ name: 'api', banner: false });
+            lateApi.tf('shown');
+            expect(consoleLogSpy).toHaveBeenCalled();
+
+            consoleLogSpy.mockClear();
+            const lateOther = new Vittra({ name: 'other', banner: false });
+            lateOther.tf('hidden'); // not mentioned → 0
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('namespaces: instance persist merge', () => {
+        // jsdom's localStorage lacks the Storage methods, so stub a real one
+        function createStorageMock(): Storage {
+            const store = new Map<string, string>();
+            return {
+                getItem: (key: string) => store.get(key) ?? null,
+                setItem: (key: string, value: string) => {
+                    store.set(key, String(value));
+                },
+                removeItem: (key: string) => {
+                    store.delete(key);
+                },
+                clear: () => {
+                    store.clear();
+                },
+                key: (index: number) => Array.from(store.keys())[index] ?? null,
+                get length() {
+                    return store.size;
+                },
+            };
+        }
+
+        beforeEach(() => {
+            vi.stubGlobal('localStorage', createStorageMock());
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+        });
+
+        it('should preserve other namespaces when one instance persists its level', () => {
+            localStorage.setItem('vittraLogLevel', 'ui:1');
+            const api = new Vittra({ name: 'api', banner: false });
+
+            api.setLogLevel(2, { persist: true });
+
+            const stored = localStorage.getItem('vittraLogLevel');
+            expect(stored).toContain('ui:1');
+            expect(stored).toContain('api:2');
+        });
+
+        it('should remove only its own slot when a named instance persists 0', () => {
+            localStorage.setItem('vittraLogLevel', 'ui:1,api:2');
+            const api = new Vittra({ name: 'api', banner: false });
+
+            api.setLogLevel(0, { persist: true });
+
+            const stored = localStorage.getItem('vittraLogLevel');
+            expect(stored).toContain('ui:1');
+            expect(stored).not.toContain('api');
+        });
+    });
+
+    describe('namespaces: banner', () => {
+        it('should show the namespace in the banner', () => {
+            log = new Vittra({ name: 'api', logLevel: 2 });
+
+            expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+            const [format] = consoleLogSpy.mock.calls[0];
+            expect(format).toContain('🪽 vittra');
+            expect(format).toContain('[api]');
+            expect(format).toContain('level 2');
+        });
+    });
+
+    describe('namespaces: level spec via URL', () => {
+        beforeEach(() => {
+            // Neutralize any runtime spec left by earlier tests so an instance
+            // the URL spec does not cover deterministically resolves to 0.
+            Vittra.setLogLevel(0);
+        });
+
+        afterEach(() => {
+            window.history.replaceState(null, '', '/');
+        });
+
+        it('should apply a bare number as a global level to named and unnamed instances', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=2');
+            const unnamed = new Vittra({ banner: false });
+            const api = new Vittra({ name: 'api', banner: false });
+
+            unnamed.tf('a');
+            expect(consoleLogSpy).toHaveBeenCalled();
+            consoleLogSpy.mockClear();
+            api.tf('b'); // a global applies to a named instance too
+            expect(consoleLogSpy).toHaveBeenCalled();
+        });
+
+        it('should apply a per-namespace spec to the matching instance only', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=api:2');
+            const api = new Vittra({ name: 'api', banner: false });
+            const unnamed = new Vittra({ banner: false });
+
+            api.tf('shown');
+            expect(consoleLogSpy).toHaveBeenCalled();
+            consoleLogSpy.mockClear();
+            unnamed.tf('hidden'); // no global/wildcard → unnamed stays 0
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+        });
+
+        it('should apply a wildcard default with a per-namespace override', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=*:1,api:2');
+            const api = new Vittra({ name: 'api', banner: false });
+            const other = new Vittra({ name: 'other', banner: false });
+
+            api.tf('full-trace'); // 2 → logs
+            expect(consoleLogSpy).toHaveBeenCalled();
+            consoleLogSpy.mockClear();
+            other.tf('suppressed'); // wildcard 1 → plain log suppressed
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            other.tfw('warned'); // wildcard 1 → warning shows
+            expect(consoleWarnSpy).toHaveBeenCalled();
+        });
+
+        it('should ignore an invalid spec entirely, leaving instances at 0', () => {
+            window.history.replaceState(null, '', '/?vittraLogLevel=api:2,bogus');
+            const api = new Vittra({ name: 'api', banner: false });
+
+            api.tf('hidden');
+            api.tfw('hidden');
+            expect(consoleLogSpy).not.toHaveBeenCalled();
+            expect(consoleWarnSpy).not.toHaveBeenCalled();
+        });
+    });
 });

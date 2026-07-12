@@ -16,6 +16,14 @@ export interface VittraOptions {
     /** Set false to suppress the one-line startup banner (only shown when logging is enabled) */
     banner?: boolean;
     /**
+     * Namespace label for this instance. When set, every printed line is
+     * prefixed with a colored `[name]` badge (color derived from a hash of the
+     * name), and the name becomes addressable in level specs — e.g.
+     * `Vittra.setLogLevel('api:2,ui:1')` sets this instance's level when name
+     * is 'api'. Unnamed instances print exactly as they do without a name.
+     */
+    name?: string;
+    /**
      * Ring-buffer capacity: how many of the most recent captured entries to
      * retain for dump() and the onEntry hook. Default 300; 0 disables
      * buffering. Captured entries hold references to the snapshots already
@@ -207,6 +215,21 @@ const OP_COLORS = [
     '#795548',
 ];
 
+/** djb2 hash of a string, kept in unsigned 32-bit range */
+function hashName(name: string): number {
+    let hash = 5381;
+    for (let index = 0; index < name.length; index++) {
+        // hash * 33 + charCode, coerced back to an unsigned 32-bit integer
+        hash = ((hash << 5) + hash + name.charCodeAt(index)) >>> 0;
+    }
+    return hash;
+}
+
+/** Deterministic per-namespace badge style: a stable OP_COLORS pick from the name */
+function namespaceStyle(name: string): string {
+    return `font-weight: bold; color: ${OP_COLORS[hashName(name) % OP_COLORS.length]}`;
+}
+
 /** How many completed operations tfat() keeps for display */
 const COMPLETED_OPS_LIMIT = 50;
 
@@ -216,6 +239,112 @@ const MANUAL_OPS_LIMIT = 100;
 /** Name of both the URL parameter and the localStorage key for the log level */
 const LOG_LEVEL_KEY = 'vittraLogLevel';
 
+/**
+ * A parsed level spec. `global` applies to every instance, `wildcard` is the
+ * default for any namespace not named explicitly, and `byName` holds
+ * per-namespace levels. Any field may be absent, meaning "this spec does not
+ * determine that slot".
+ */
+interface LevelSpec {
+    global?: number;
+    wildcard?: number;
+    byName: Map<string, number>;
+}
+
+/** Namespace identifiers accepted in a spec: word chars, dashes, or the `*` wildcard */
+const NAMESPACE_IDENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Parse a level spec string. Accepts a bare number (`'2'` → global), a
+ * comma-separated list of `<name>:<level>` pairs (`'api:2,ui:1'`), and the
+ * `*:<level>` wildcard default. Returns null — the spec is ignored entirely —
+ * unless every segment is a finite number or `<ident>:<finite number>`.
+ */
+function parseLevelSpec(raw: string): LevelSpec | null {
+    const spec: LevelSpec = { byName: new Map<string, number>() };
+    for (const segment of raw.split(',')) {
+        const trimmed = segment.trim();
+        if (trimmed === '') {
+            return null;
+        }
+        const colonIndex = trimmed.indexOf(':');
+        if (colonIndex === -1) {
+            // A bare segment is the global level
+            const level = Number(trimmed);
+            if (!Number.isFinite(level)) {
+                return null;
+            }
+            spec.global = level;
+            continue;
+        }
+        const ident = trimmed.slice(0, colonIndex);
+        const valueText = trimmed.slice(colonIndex + 1);
+        const level = Number(valueText);
+        // Number('') is 0, so an empty value must be rejected explicitly
+        if (valueText.trim() === '' || !Number.isFinite(level)) {
+            return null;
+        }
+        if (ident === '*') {
+            spec.wildcard = level;
+        } else if (NAMESPACE_IDENT.test(ident)) {
+            spec.byName.set(ident, level);
+        } else {
+            return null;
+        }
+    }
+    return spec;
+}
+
+/** Serialize a spec back to its string form (the inverse of parseLevelSpec) */
+function serializeLevelSpec(spec: LevelSpec): string {
+    const parts: string[] = [];
+    if (spec.global !== undefined) {
+        parts.push(String(spec.global));
+    }
+    if (spec.wildcard !== undefined) {
+        parts.push(`*:${spec.wildcard}`);
+    }
+    for (const [name, level] of spec.byName) {
+        parts.push(`${name}:${level}`);
+    }
+    return parts.join(',');
+}
+
+/**
+ * Resolve the level a spec assigns to one instance. A named instance prefers
+ * its own slot, then the wildcard, then the global; an unnamed instance takes
+ * the global, then the wildcard. undefined means the spec is silent about this
+ * instance, so the caller should fall through to the next source.
+ */
+function resolveLevel(spec: LevelSpec, name: string | undefined): number | undefined {
+    if (name !== undefined) {
+        const named = spec.byName.get(name);
+        if (named !== undefined) {
+            return named;
+        }
+        if (spec.wildcard !== undefined) {
+            return spec.wildcard;
+        }
+        return spec.global;
+    }
+    if (spec.global !== undefined) {
+        return spec.global;
+    }
+    return spec.wildcard;
+}
+
+/**
+ * Every constructed instance, named or unnamed. Strong references — fine for
+ * the page-lifetime logger singletons this library is built for; an instance
+ * lives as long as the module. Vittra.setLogLevel iterates this to apply a
+ * spec to every instance at once, and every instance participates in global
+ * level updates.
+ */
+const registry: Vittra[] = [];
+
+/** The spec set by Vittra.setLogLevel this session; consulted by new instances */
+let runtimeSpec: LevelSpec | null = null;
+
 /** Library version — updated by release automation */
 const VITTRA_VERSION = '0.5.0'; // x-release-please-version
 
@@ -224,19 +353,20 @@ const BANNER_STYLE =
     'background:linear-gradient(135deg,#5c6bc0,#26a69a);color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold';
 
 /** One-line startup banner confirming that tracing is active and why */
-function printBanner(level: number, levelSource: string): void {
+function printBanner(level: number, levelSource: string, name?: string): void {
+    const nameSegment = name !== undefined ? `[${name}] ` : '';
     console.log(
-        `%c🪽 vittra%c v${VITTRA_VERSION} · level ${level} · via ${levelSource}`,
+        `%c🪽 vittra%c v${VITTRA_VERSION} · ${nameSegment}level ${level} · via ${levelSource}`,
         BANNER_STYLE,
         'color:#8a8a8a',
     );
 }
 
 /**
- * Read the log level from the vittraLogLevel URL parameter.
- * Returns null when the parameter is absent or not a valid number.
+ * Read a level spec from the vittraLogLevel URL parameter. Returns null when
+ * the parameter is absent or the spec is invalid (which is then ignored).
  */
-function readUrlLogLevel(): number | null {
+function readUrlLevelSpec(): LevelSpec | null {
     try {
         if (
             typeof globalThis !== 'undefined' &&
@@ -246,10 +376,7 @@ function readUrlLogLevel(): number | null {
             const urlParams = new globalThis.URLSearchParams(globalThis.location.search);
             const param = urlParams.get(LOG_LEVEL_KEY);
             if (param !== null) {
-                const level = Number(param);
-                if (Number.isFinite(level)) {
-                    return level;
-                }
+                return parseLevelSpec(param);
             }
         }
     } catch {
@@ -271,17 +398,14 @@ function intersperseCommas(values: unknown[]): unknown[] {
 }
 
 /**
- * Read a log level persisted by setLogLevel(level, { persist: true }).
- * Returns null when nothing valid is stored or localStorage is unavailable.
+ * Read a level spec persisted by setLogLevel(..., { persist: true }). Returns
+ * null when nothing valid is stored or localStorage is unavailable.
  */
-function readPersistedLogLevel(): number | null {
+function readPersistedLevelSpec(): LevelSpec | null {
     try {
         const stored = globalThis.localStorage?.getItem(LOG_LEVEL_KEY);
         if (stored != null) {
-            const level = Number(stored);
-            if (Number.isFinite(level)) {
-                return level;
-            }
+            return parseLevelSpec(stored);
         }
     } catch {
         // localStorage unavailable (SSR, privacy settings) — nothing persisted
@@ -357,12 +481,50 @@ export class Vittra {
     private markNameStack: string[] = [];
     /** Monotonic source of unique function span mark names (perfMarks only) */
     private perfMarkCounter: number = 0;
+    /** Namespace label; addressable in level specs and shown as a badge */
+    private readonly name?: string;
+    /** `%c[name]` format segment prepended to every printed line ('' when unnamed) */
+    private nameBadge: string = '';
+    /** The style(s) for nameBadge, spread before each line's own style ([] when unnamed) */
+    private nameBadgeStyle: string[] = [];
 
     constructor(options: VittraOptions = {}) {
-        // URL parameter overrides the option; an omitted option falls back to a persisted level
-        const urlLogLevel = readUrlLogLevel();
-        const persistedLogLevel = readPersistedLogLevel();
-        this.logLevel = urlLogLevel ?? options.logLevel ?? persistedLogLevel ?? 0;
+        this.name = options.name;
+        // A named instance prepends a colored %c[name] segment to every printed
+        // line. Unnamed instances keep an empty badge and no extra style, so
+        // '' + format and ...[] leave the console call byte-for-byte unchanged.
+        if (this.name !== undefined) {
+            this.nameBadge = `%c[${this.name}]`;
+            this.nameBadgeStyle = [namespaceStyle(this.name)];
+        }
+
+        // Resolution order (highest first): URL spec > constructor option >
+        // runtime spec (Vittra.setLogLevel this session) > persisted spec > 0.
+        // A spec silent about this instance (resolves undefined) falls through.
+        const urlSpec = readUrlLevelSpec();
+        const persistedSpec = readPersistedLevelSpec();
+        const urlLevel = urlSpec !== null ? resolveLevel(urlSpec, this.name) : undefined;
+        const runtimeLevel =
+            runtimeSpec !== null ? resolveLevel(runtimeSpec, this.name) : undefined;
+        const persistedLevel =
+            persistedSpec !== null ? resolveLevel(persistedSpec, this.name) : undefined;
+
+        let levelSource = 'option';
+        if (urlLevel !== undefined) {
+            this.logLevel = urlLevel;
+            levelSource = 'url parameter';
+        } else if (options.logLevel !== undefined) {
+            this.logLevel = options.logLevel;
+        } else if (runtimeLevel !== undefined) {
+            this.logLevel = runtimeLevel;
+            levelSource = 'runtime';
+        } else if (persistedLevel !== undefined) {
+            this.logLevel = persistedLevel;
+            levelSource = 'localStorage';
+        } else {
+            this.logLevel = 0;
+        }
+
         this.logTime = options.logTime || false;
         this.logWithType = options.logWithType || false;
         this.boldStyle = 'font-weight: bold';
@@ -391,14 +553,13 @@ export class Vittra {
             this.registerErrorListeners();
         }
 
+        // Register so Vittra.setLogLevel can reach this instance later
+        registry.push(this);
+
+        // Per-instance banner (prints once per eligible instance). A named
+        // instance shows its badge in the banner text.
         if (this.logLevel >= 1 && options.banner !== false) {
-            let levelSource = 'option';
-            if (urlLogLevel !== null) {
-                levelSource = 'url parameter';
-            } else if (options.logLevel === undefined && persistedLogLevel !== null) {
-                levelSource = 'localStorage';
-            }
-            printBanner(this.logLevel, levelSource);
+            printBanner(this.logLevel, levelSource, this.name);
         }
     }
 
@@ -426,14 +587,99 @@ export class Vittra {
         if (options.persist !== true) {
             return;
         }
+        this.persistOwnLevel(level);
+    }
+
+    /**
+     * Persist just this instance's slot into the shared spec, leaving every
+     * other namespace's persisted level untouched. Merges into the stored spec
+     * rather than overwriting it, so one instance never wipes another's level.
+     * An unnamed instance owns the global slot; persisting 0 removes its slot,
+     * and an empty resulting spec clears the key.
+     */
+    private persistOwnLevel(level: number): void {
         try {
-            if (level === 0) {
+            const stored = globalThis.localStorage?.getItem(LOG_LEVEL_KEY);
+            const spec: LevelSpec = (stored != null ? parseLevelSpec(stored) : null) ?? {
+                byName: new Map<string, number>(),
+            };
+            if (this.name !== undefined) {
+                if (level === 0) {
+                    spec.byName.delete(this.name);
+                } else {
+                    spec.byName.set(this.name, level);
+                }
+            } else if (level === 0) {
+                spec.global = undefined;
+            } else {
+                spec.global = level;
+            }
+            const serialized = serializeLevelSpec(spec);
+            if (serialized === '') {
                 globalThis.localStorage?.removeItem(LOG_LEVEL_KEY);
             } else {
-                globalThis.localStorage?.setItem(LOG_LEVEL_KEY, String(level));
+                globalThis.localStorage?.setItem(LOG_LEVEL_KEY, serialized);
             }
         } catch {
             // localStorage unavailable — the level still applies in memory
+        }
+    }
+
+    /**
+     * Set log levels across every instance from a spec. A spec is a
+     * comma-separated list mixing a bare number for the global level,
+     * `<name>:<level>` pairs, and a `*:<level>` wildcard default — e.g.
+     * `'api:2,ui:1'` or `'*:1,api:2'`. A plain number sets the global level.
+     * An invalid spec is ignored entirely. Each registered instance is set to
+     * its resolved level, or 0 when the spec does not mention it — with a spec
+     * string the spec is the whole configuration.
+     *
+     * @param spec A level spec string, or a number for a global level
+     * @param options Set persist to true to remember the raw spec in
+     *                localStorage; a plain 0 clears the remembered value.
+     *
+     * Example:
+     * ```typescript
+     * Vittra.setLogLevel('api:2,ui:1');                 // per-namespace
+     * Vittra.setLogLevel('*:1,api:2', { persist: true }); // wildcard + override
+     * ```
+     */
+    static setLogLevel(spec: string | number, options: { persist?: boolean } = {}): void {
+        const parsed =
+            typeof spec === 'number'
+                ? Number.isFinite(spec)
+                    ? { byName: new Map<string, number>(), global: spec }
+                    : null
+                : parseLevelSpec(spec);
+        if (parsed === null) {
+            return;
+        }
+        runtimeSpec = parsed;
+        // The spec is the whole configuration: an instance it does not mention
+        // drops to 0, matching how the debug package's DEBUG variable behaves.
+        for (const instance of registry) {
+            instance.logLevel = resolveLevel(parsed, instance.name) ?? 0;
+        }
+        if (options.persist === true) {
+            Vittra.persistRawSpec(spec);
+        }
+    }
+
+    /**
+     * Persist the raw spec string for the static setter. A plain 0 clears the
+     * remembered value (the existing "off is forgotten" semantic); any other
+     * spec is stored verbatim.
+     */
+    private static persistRawSpec(spec: string | number): void {
+        try {
+            const raw = typeof spec === 'number' ? String(spec) : spec;
+            if (raw.trim() === '0') {
+                globalThis.localStorage?.removeItem(LOG_LEVEL_KEY);
+            } else {
+                globalThis.localStorage?.setItem(LOG_LEVEL_KEY, raw);
+            }
+        } catch {
+            // localStorage unavailable — the spec still applies in memory
         }
     }
 
@@ -681,6 +927,11 @@ export class Vittra {
      * colors, comma interspersing, %o type specifiers, and time suffixes.
      */
     private printEntry(entry: LogEntry): void {
+        // Named instances prepend a %c[name] badge to every line; unnamed
+        // instances carry an empty badge and no extra style, leaving each
+        // console call identical to the un-namespaced output.
+        const badge = this.nameBadge;
+        const badgeStyle = this.nameBadgeStyle;
         switch (entry.kind) {
             case 'log': {
                 const prefix = entry.level === 'clean' ? '' : '+ ';
@@ -689,13 +940,31 @@ export class Vittra {
                 const nOs = entry.withType ? entry.values.map(() => '%o').join(' ') : '';
                 const timeSuffix =
                     entry.delta !== undefined ? [`  [Δ ${this.formatTime(entry.delta)}]`] : [];
-                const format = `%c${prefix}${nOs}`;
+                const format = `${badge}%c${prefix}${nOs}`;
                 if (entry.level === 'warn') {
-                    console.warn(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                    console.warn(
+                        format,
+                        ...badgeStyle,
+                        this.boldStyle,
+                        ...entry.values,
+                        ...timeSuffix,
+                    );
                 } else if (entry.level === 'error') {
-                    console.error(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                    console.error(
+                        format,
+                        ...badgeStyle,
+                        this.boldStyle,
+                        ...entry.values,
+                        ...timeSuffix,
+                    );
                 } else {
-                    console.log(format, this.boldStyle, ...entry.values, ...timeSuffix);
+                    console.log(
+                        format,
+                        ...badgeStyle,
+                        this.boldStyle,
+                        ...entry.values,
+                        ...timeSuffix,
+                    );
                 }
                 break;
             }
@@ -704,7 +973,8 @@ export class Vittra {
                 break;
             case 'funcEntry':
                 console.group(
-                    `%c--> ${entry.func}(`,
+                    `${badge}%c--> ${entry.func}(`,
+                    ...badgeStyle,
                     this.boldStyle,
                     ...intersperseCommas(entry.values),
                     ')',
@@ -716,12 +986,17 @@ export class Vittra {
                     entry.duration !== undefined ? `[${this.formatTime(entry.duration)}]` : '';
                 if (entry.values.length > 0) {
                     console.log(
-                        `%c<-- ${entry.func} ${runtime} =`,
+                        `${badge}%c<-- ${entry.func} ${runtime} =`,
+                        ...badgeStyle,
                         this.boldStyle,
                         ...intersperseCommas(entry.values),
                     );
                 } else {
-                    console.log(`%c<-- ${entry.func} ${runtime}`, this.boldStyle);
+                    console.log(
+                        `${badge}%c<-- ${entry.func} ${runtime}`,
+                        ...badgeStyle,
+                        this.boldStyle,
+                    );
                 }
                 break;
             }
@@ -731,16 +1006,21 @@ export class Vittra {
             case 'asyncStart': {
                 const style = this.opStyle(entry.opId);
                 if (entry.args === undefined) {
-                    console.log(`%c⟳ ${entry.func} #${entry.opId}`, style);
+                    console.log(`${badge}%c⟳ ${entry.func} #${entry.opId}`, ...badgeStyle, style);
                 } else if (entry.args.length > 0) {
                     console.log(
-                        `%c⟳ ${entry.func} #${entry.opId} (`,
+                        `${badge}%c⟳ ${entry.func} #${entry.opId} (`,
+                        ...badgeStyle,
                         style,
                         ...intersperseCommas(entry.args),
                         ')',
                     );
                 } else {
-                    console.log(`%c⟳ ${entry.func} #${entry.opId} ()`, style);
+                    console.log(
+                        `${badge}%c⟳ ${entry.func} #${entry.opId} ()`,
+                        ...badgeStyle,
+                        style,
+                    );
                 }
                 break;
             }
@@ -750,31 +1030,41 @@ export class Vittra {
                     entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
                 if (entry.values.length > 0) {
                     console.log(
-                        `%c✓ ${entry.func} #${entry.opId}${runtime} =`,
+                        `${badge}%c✓ ${entry.func} #${entry.opId}${runtime} =`,
+                        ...badgeStyle,
                         style,
                         ...intersperseCommas(entry.values),
                     );
                 } else {
-                    console.log(`%c✓ ${entry.func} #${entry.opId}${runtime}`, style);
+                    console.log(
+                        `${badge}%c✓ ${entry.func} #${entry.opId}${runtime}`,
+                        ...badgeStyle,
+                        style,
+                    );
                 }
                 break;
             }
             case 'asyncComplete': {
                 const style = this.opStyle(entry.opId);
                 const mark = entry.status === 'failed' ? '✗' : '✓';
-                const badge = entry.badgeParent !== undefined ? ` ←#${entry.badgeParent}` : '';
+                const parentBadge =
+                    entry.badgeParent !== undefined ? ` ←#${entry.badgeParent}` : '';
                 const runtime =
                     entry.duration !== undefined ? ` [${this.formatTime(entry.duration)}]` : '';
-                const header = `%c${mark} ${entry.func} #${entry.opId}${badge}${runtime}`;
+                const header = `${badge}%c${mark} ${entry.func} #${entry.opId}${parentBadge}${runtime}`;
                 if (entry.values.length > 0) {
-                    console.group(`${header} =`, style, ...entry.values);
+                    console.group(`${header} =`, ...badgeStyle, style, ...entry.values);
                 } else {
-                    console.group(header, style);
+                    console.group(header, ...badgeStyle, style);
                 }
                 break;
             }
             case 'asyncPending':
-                console.log(`%c⟳ ${entry.func} #${entry.opId} (pending)`, this.opStyle(entry.opId));
+                console.log(
+                    `${badge}%c⟳ ${entry.func} #${entry.opId} (pending)`,
+                    ...badgeStyle,
+                    this.opStyle(entry.opId),
+                );
                 break;
             case 'opError':
                 console.error(entry.error);

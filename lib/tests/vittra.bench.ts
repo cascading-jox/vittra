@@ -46,6 +46,8 @@ const withHook = new Vittra({ banner: false, logLevel: 2, logTime: true, onEntry
 const noBuffer = new Vittra({ banner: false, logLevel: 2, logTime: true, bufferSize: 0 });
 // Level 2 emitting real User Timing spans, to price the mark/measure path.
 const perfMarks = new Vittra({ banner: false, logLevel: 2, logTime: true, perfMarks: true });
+// Level 2 named instance: prices the namespace-badge string prepend on print.
+const namedActive = new Vittra({ banner: false, logLevel: 2, logTime: true, name: 'api' });
 
 // --- disabled path: every trace call must early-return in nanoseconds ---
 
@@ -66,6 +68,10 @@ bench('level 2: tf with small object', () => {
 
 bench('level 2: tf with large object', () => {
     active.tf(largeObject);
+});
+
+bench('level 2 named instance: tf with small object', () => {
+    namedActive.tf(smallObject);
 });
 
 bench('level 2: tfi/tfo pair', () => {

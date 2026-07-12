@@ -16,6 +16,14 @@ export interface VittraOptions {
     /** Set false to suppress the one-line startup banner (only shown when logging is enabled) */
     banner?: boolean;
     /**
+     * Namespace label for this instance. When set, every printed line is
+     * prefixed with a colored `[name]` badge (color derived from a hash of the
+     * name), and the name becomes addressable in level specs — e.g.
+     * `Vittra.setLogLevel('api:2,ui:1')` sets this instance's level when name
+     * is 'api'. Unnamed instances print exactly as they do without a name.
+     */
+    name?: string;
+    /**
      * Ring-buffer capacity: how many of the most recent captured entries to
      * retain for dump() and the onEntry hook. Default 300; 0 disables
      * buffering. Captured entries hold references to the snapshots already
@@ -165,10 +173,30 @@ export declare class Vittra {
     constructor(options?: VittraOptions);
 
     /**
-     * Change the log level at runtime
+     * Set log levels across every instance from a spec. A spec is a
+     * comma-separated list mixing a bare number for the global level,
+     * `<name>:<level>` pairs, and a `*:<level>` wildcard default — e.g.
+     * `'api:2,ui:1'` or `'*:1,api:2'`. A plain number sets the global level.
+     * An invalid spec is ignored entirely. Each registered instance is set to
+     * its resolved level, or 0 when the spec does not mention it.
+     * @param spec A level spec string, or a number for a global level
+     * @param options Set persist to true to remember the raw spec in
+     *                localStorage; a plain 0 clears the remembered value
+     *
+     * Example:
+     * ```typescript
+     * Vittra.setLogLevel('api:2,ui:1');                    // per-namespace
+     * Vittra.setLogLevel('*:1,api:2', { persist: true });  // wildcard + override
+     * ```
+     */
+    static setLogLevel(spec: string | number, options?: { persist?: boolean }): void;
+
+    /**
+     * Change this instance's log level at runtime
      * @param level The new log level (0 disables logging)
      * @param options Set persist to true to remember the level in localStorage
-     *                across page loads; persisting 0 clears the remembered level
+     *                across page loads; the persisted spec is merged, so this
+     *                instance's slot is set without wiping other namespaces
      */
     setLogLevel(level: number, options?: { persist?: boolean }): void;
 
