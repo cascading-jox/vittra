@@ -57,6 +57,11 @@ export interface VittraOptions {
      * captures). Never fires again when a tfa buffer is replayed. A throwing
      * hook is swallowed silently and never breaks logging or the app.
      *
+     * For lines buffered inside a tfa operation, printed records the print
+     * gate at buffer time; the block's real print decision is made later, at
+     * completion, so a level change mid-operation or a throttled replay can
+     * differ from the recorded flag in either direction.
+     *
      * Treat the received entry as immutable: it is the same object the ring
      * buffer stores and that may still be about to print, so mutating it alters
      * both the console output and later dump() contents.
@@ -104,8 +109,9 @@ export interface VittraOptions {
      * entirely. A hot loop logging thousands of lines makes DevTools unusable —
      * rendering is the expensive part — so throttling drops the surplus PRINTS
      * while capture is untouched: the ring buffer and the onEntry hook still
-     * record every entry (printed: false for the suppressed ones), so dump()
-     * stays complete.
+     * record every entry (printed: false for suppressed live entries; lines
+     * buffered inside a tfa operation keep their buffer-time flag — see
+     * onEntry), so dump() stays complete.
      *
      * The window is a fixed 1-second bucket. When a window that suppressed
      * anything rolls over, the next printed entry is preceded by a one-line
