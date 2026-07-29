@@ -1,4 +1,4 @@
 allowBuilds:
-  esbuild: true
+    esbuild: true
 overrides:
-  yaml: ">=2.8.3"
+    yaml: '>=2.8.3'
