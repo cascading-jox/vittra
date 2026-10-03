@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.2](https://github.com/cascading-jox/vittra/compare/v0.7.1...v0.7.2) (2026-10-03)
+
+
+### Styles
+
+* reformat repo with oxfmt ([4203ca3](https://github.com/cascading-jox/vittra/commit/4203ca34c6a9361f5d3b40b45568539496d5528e))
+
+
+### Miscellaneous Chores
+
+* replace prettier and eslint with oxfmt and oxlint ([28aac07](https://github.com/cascading-jox/vittra/commit/28aac0707272cac7c191022db077328fd779d25e))
+
 ## [0.7.1](https://github.com/cascading-jox/vittra/compare/v0.7.0...v0.7.1) (2026-07-12)
 
 ### Bug Fixes
