@@ -3,9 +3,6 @@
     "env": {
         "browser": true
     },
-    "globals": {
-        "__dirname": "readonly"
-    },
     "ignorePatterns": ["dist", "coverage"],
     "rules": {
         "no-undef": "off",
